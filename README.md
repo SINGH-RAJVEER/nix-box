@@ -62,6 +62,6 @@ All contributions should follow Rust best practices and include appropriate docu
 
 ---
 
-**Maintainer:** [yourusername](https://github.com/SINGH-RAJVEER)
+**Maintainer:** [SINGH-RAJVEER](https://github.com/SINGH-RAJVEER)
 
 ---
