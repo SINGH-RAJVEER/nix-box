@@ -1,6 +1,6 @@
 ---
-
-# ArchBox
+title: "ArchBox"
+---
 
 **ArchBox** is a modern, extensible command-line tool, writtend in rust, for managing a curated set of essential tools and applications on Arch Linux. It provides a unified interface for installing, searching, updating, and configuring packages from official repositories, the AUR, binaries, AppImages, Flatpaks, and more.
 
@@ -28,18 +28,25 @@ sudo cp target/release/archbox /usr/local/bin/
 
 - Install packages:  
   `archbox install neovim starship`
+  
 - Search for packages:  
   `archbox search editor`
+  
 - List available or installed packages:  
   `archbox list --installed`
+  
 - Show package info:  
   `archbox info neovim`
+  
 - Remove packages:  
   `archbox remove discord`
+  
 - Update definitions and packages:  
   `archbox update`
+  
 - Manage profiles:  
   `archbox profile list`
+  
 - Get recommendations:  
   `archbox recommend`
 
