@@ -1,5 +1,5 @@
 ---
-title: "ArchBox"
+"ArchBox"
 ---
 
 **ArchBox** is a modern, extensible command-line tool, writtend in rust, for managing a curated set of essential tools and applications on Arch Linux. It provides a unified interface for installing, searching, updating, and configuring packages from official repositories, the AUR, binaries, AppImages, Flatpaks, and more.
