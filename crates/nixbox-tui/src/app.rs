@@ -4,8 +4,8 @@ use std::time::Duration;
 use anyhow::Result;
 use nixbox_config::{Config, Target};
 use nixbox_nix::{
-    build::{rebuild, BuildEvent},
-    manifest::ManagedFile,
+    build::{home_manager_switch_cmd, rebuild, BuildEvent},
+    manifest::{ensure_home_nix, ManagedFile},
     search::{search, SearchHit},
     Manifest,
 };
@@ -260,8 +260,15 @@ async fn install_selected(
                 }
             }
         });
+        let hm_cmd;
+        let hm_args_owned;
         let (cmd, args): (&str, Vec<&str>) = match target {
-            Target::HomeManager => ("home-manager", vec!["switch"]),
+            Target::HomeManager => {
+                let (c, a) = home_manager_switch_cmd();
+                hm_cmd = c;
+                hm_args_owned = a;
+                (hm_cmd.as_str(), hm_args_owned.iter().map(|s| s.as_str()).collect())
+            }
             Target::NixosSystem => ("sudo", vec!["nixos-rebuild", "switch"]),
         };
         if let Err(e) = rebuild(cmd, &args, build_tx.clone()).await {
