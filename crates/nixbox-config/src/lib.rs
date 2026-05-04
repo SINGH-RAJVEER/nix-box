@@ -25,24 +25,31 @@ impl Target {
 pub struct Config {
     pub channel: String,
     pub target: Target,
-    pub config_dir: PathBuf,
-    pub managed_file: PathBuf,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        let config_dir = default_nixos_dir();
-        let managed_file = config_dir.join("nixbox-packages.nix");
         Self {
             channel: "nixpkgs".to_string(),
             target: Target::HomeManager,
-            config_dir,
-            managed_file,
         }
     }
 }
 
 impl Config {
+    /// Returns the path where nixbox writes its managed packages file for the current target.
+    pub fn managed_file(&self) -> PathBuf {
+        match self.target {
+            Target::HomeManager => home_manager_dir().join("nixbox-packages.nix"),
+            Target::NixosSystem => nixos_dir().join("nixbox-packages.nix"),
+        }
+    }
+
+    /// Returns the home-manager config directory (where home.nix lives).
+    pub fn home_manager_dir(&self) -> PathBuf {
+        home_manager_dir()
+    }
+
     pub fn load_or_default() -> Result<Self> {
         let path = settings_path()?;
         if !path.exists() {
@@ -73,7 +80,15 @@ pub fn settings_path() -> Result<PathBuf> {
     Ok(base.config_dir().join("nixbox").join("settings.json"))
 }
 
-fn default_nixos_dir() -> PathBuf {
+fn home_manager_dir() -> PathBuf {
+    if let Some(base) = BaseDirs::new() {
+        base.config_dir().join("home-manager")
+    } else {
+        PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/home-manager")
+    }
+}
+
+fn nixos_dir() -> PathBuf {
     if Path::new("/etc/nixos").exists() {
         PathBuf::from("/etc/nixos")
     } else if let Some(base) = BaseDirs::new() {

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
@@ -11,13 +12,46 @@ pub enum BuildEvent {
     Finished(Result<(), String>),
 }
 
+fn find_in_nix_profiles(name: &str) -> Option<PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let user = std::env::var("USER").unwrap_or_default();
+    let candidates = [
+        format!("{home}/.nix-profile/bin/{name}"),
+        format!("/etc/profiles/per-user/{user}/bin/{name}"),
+        format!("/run/current-system/sw/bin/{name}"),
+        format!("/nix/var/nix/profiles/default/bin/{name}"),
+    ];
+    candidates.into_iter().map(PathBuf::from).find(|p| p.exists())
+}
+
+/// Returns (command, args) for running `home-manager switch`.
+/// Falls back to `nix run nixpkgs#home-manager -- switch` when the binary is absent.
+pub fn home_manager_switch_cmd() -> (String, Vec<String>) {
+    if let Some(bin) = find_in_nix_profiles("home-manager") {
+        (bin.to_string_lossy().into_owned(), vec!["switch".into()])
+    } else {
+        (
+            "nix".into(),
+            vec![
+                "run".into(),
+                "nixpkgs#home-manager".into(),
+                "--".into(),
+                "switch".into(),
+            ],
+        )
+    }
+}
+
 pub async fn rebuild(command: &str, args: &[&str], tx: mpsc::Sender<BuildEvent>) -> Result<()> {
-    let mut child = Command::new(command)
+    let resolved = find_in_nix_profiles(command)
+        .unwrap_or_else(|| PathBuf::from(command));
+
+    let mut child = Command::new(&resolved)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("spawning `{}`", command))?;
+        .with_context(|| format!("spawning `{}` (resolved: {})", command, resolved.display()))?;
 
     let stdout = child.stdout.take().context("capturing stdout")?;
     let stderr = child.stderr.take().context("capturing stderr")?;
