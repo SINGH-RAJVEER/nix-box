@@ -1,0 +1,17 @@
+[package]
+name = "nixbox-tui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+nixbox-nix = { path = "../nixbox-nix" }
+nixbox-config = { path = "../nixbox-config" }
+anyhow = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tui-input = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
