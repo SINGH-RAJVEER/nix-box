@@ -20,8 +20,18 @@ struct RawHit {
     description: String,
 }
 
+/// Resolves a channel shortname to a flake ref. Bare names like `nixpkgs-unstable`
+/// aren't always in the user's registry, so map known ones explicitly.
+fn resolve_channel(channel: &str) -> &str {
+    match channel {
+        "nixpkgs-unstable" => "github:NixOS/nixpkgs/nixos-unstable",
+        other => other,
+    }
+}
+
 pub async fn search(channel: &str, query: &str) -> Result<Vec<SearchHit>> {
     let query = if query.trim().is_empty() { "^" } else { query };
+    let resolved = resolve_channel(channel);
 
     let output = Command::new("nix")
         .args([
@@ -29,7 +39,7 @@ pub async fn search(channel: &str, query: &str) -> Result<Vec<SearchHit>> {
             "--json",
             "--extra-experimental-features",
             "nix-command flakes",
-            channel,
+            resolved,
             query,
         ])
         .output()
