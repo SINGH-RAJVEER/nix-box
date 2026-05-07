@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
@@ -24,11 +24,13 @@ fn find_in_nix_profiles(name: &str) -> Option<PathBuf> {
     candidates.into_iter().map(PathBuf::from).find(|p| p.exists())
 }
 
-/// Returns (command, args) for running `home-manager switch`.
+/// Returns (command, args) for `home-manager switch --flake <config_dir>#<user>`.
 /// Falls back to `nix run nixpkgs#home-manager -- switch` when the binary is absent.
-pub fn home_manager_switch_cmd() -> (String, Vec<String>) {
+pub fn home_manager_switch_cmd(config_dir: &Path) -> (String, Vec<String>) {
+    let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
+    let flake_ref = format!("{}#{}", config_dir.display(), user);
     if let Some(bin) = find_in_nix_profiles("home-manager") {
-        (bin.to_string_lossy().into_owned(), vec!["switch".into()])
+        (bin.to_string_lossy().into_owned(), vec!["switch".into(), "--flake".into(), flake_ref])
     } else {
         (
             "nix".into(),
@@ -37,6 +39,8 @@ pub fn home_manager_switch_cmd() -> (String, Vec<String>) {
                 "nixpkgs#home-manager".into(),
                 "--".into(),
                 "switch".into(),
+                "--flake".into(),
+                flake_ref,
             ],
         )
     }
