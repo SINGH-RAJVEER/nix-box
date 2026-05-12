@@ -44,7 +44,7 @@ cargo build --release
 ```sh
 nix run            # via the flake
 # or
-./target/release/nixbox
+just run           # needs just installed
 ```
 
 ## Layout
