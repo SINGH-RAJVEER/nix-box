@@ -47,23 +47,6 @@ nix run            # via the flake
 ./target/release/nixbox
 ```
 
-## Test VM
-
-A throwaway NixOS QEMU VM is exposed as a flake output, so you can exercise the rebuild flow without touching your host config.
-
-```sh
-nix run .#vm
-```
-
-That builds `nixbox` from the current source tree, builds a NixOS VM that bundles it, and launches QEMU in `-nographic` mode. The MOTD inside the VM tells you how to wire `/etc/nixos/configuration.nix` for the NixOS-target test or `~/.config/home-manager/home.nix` for the home-manager-target test. User is `tester` (passwordless sudo, auto-login on tty1). `sudo poweroff` shuts it down.
-
-To rebuild only the VM image without launching:
-
-```sh
-nix build .#vm
-./result/bin/run-nixbox-vm-vm
-```
-
 ## Layout
 
 Cargo workspace:

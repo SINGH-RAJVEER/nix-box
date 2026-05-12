@@ -24,23 +24,11 @@
             cargoLock.lockFile = ./Cargo.lock;
             nativeBuildInputs = [ rustToolchain ];
           };
-          isVmHost = system == "x86_64-linux";
-          vmRunner = pkgs.writeShellApplication {
-            name = "run-nixbox-vm";
-            runtimeInputs = [ pkgs.nixos-rebuild ];
-            text = ''
-              set -euo pipefail
-              nixos-rebuild build-vm --flake "${self}#nixbox-vm"
-              exec ./result/bin/run-nixbox-vm-vm "$@"
-            '';
-          };
         in {
           packages = {
             default = nixbox;
             nixbox = nixbox;
             nixbox-crate = pkgs.callPackage ./nix/package.nix {};
-          } // nixpkgs.lib.optionalAttrs isVmHost {
-            vm = self.nixosConfigurations.nixbox-vm.config.system.build.vm;
           };
 
           devShells.default = pkgs.mkShell {
@@ -50,26 +38,7 @@
               pkgs.nix
             ];
           };
-
-          apps = nixpkgs.lib.optionalAttrs isVmHost {
-            vm = {
-              type = "app";
-              program = "${vmRunner}/bin/run-nixbox-vm";
-            };
-          };
         });
     in
-    perSystem // {
-      nixosConfigurations.nixbox-vm = nixpkgs.lib.nixosSystem {
-        system = "x86_64-linux";
-        modules = [
-          ./nix/vm.nix
-          ({ pkgs, ... }: {
-            environment.systemPackages = [
-              self.packages.${pkgs.system}.nixbox
-            ];
-          })
-        ];
-      };
-    };
+    perSystem;
 }

@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::Result;
 use nixbox_config::{Config, Target};
 use nixbox_nix::{
-    build::{home_manager_switch_cmd, rebuild, BuildEvent},
+    build::{home_manager_switch_cmd, nixos_rebuild_switch_cmd, rebuild, BuildEvent},
     manifest::ManagedFile,
     search::{search, SearchHit},
     Manifest,
@@ -564,9 +564,9 @@ fn spawn_rebuild(app: &mut App, tx: &mpsc::Sender<AppEvent>, action_label: Strin
                 (cmd_owned.as_str(), args_owned.iter().map(|s| s.as_str()).collect())
             }
             Target::NixosSystem => {
-                let flake_ref = format!("{}#vm", config_dir.display());
-                cmd_owned = "nix".into();
-                args_owned = vec!["build".into(), flake_ref];
+                let (c, a) = nixos_rebuild_switch_cmd(&config_dir);
+                cmd_owned = c;
+                args_owned = a;
                 (cmd_owned.as_str(), args_owned.iter().map(|s| s.as_str()).collect())
             }
         };
