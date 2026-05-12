@@ -136,6 +136,10 @@ fn draw_search_body(f: &mut Frame, area: Rect, app: &App) {
 
     let results_block = titled_panel(t, Span::styled("Results", t.title_style()));
 
+    let no_results = !app.searching
+        && !app.latest_query.is_empty()
+        && app.results.is_empty();
+
     if app.searching && app.results.is_empty() {
         let frame = SPINNER[app.spinner_frame % SPINNER.len()];
         let inner_h = split[0].height.saturating_sub(2) as usize;
@@ -144,6 +148,16 @@ fn draw_search_body(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(vec![
             Span::styled(format!("  {}  ", frame), t.version_style()),
             Span::styled("Searching nixpkgs…", Style::default().add_modifier(Modifier::DIM)),
+        ]));
+        f.render_widget(Paragraph::new(lines).block(results_block), split[0]);
+    } else if no_results {
+        let dim = Style::default().add_modifier(Modifier::DIM);
+        let inner_h = split[0].height.saturating_sub(2) as usize;
+        let pad = inner_h / 2;
+        let mut lines: Vec<Line> = (0..pad).map(|_| Line::raw("")).collect();
+        lines.push(Line::from(vec![
+            Span::styled("No results for ", dim),
+            Span::styled(format!("\"{}\"", app.latest_query), t.name_style()),
         ]));
         f.render_widget(Paragraph::new(lines).block(results_block), split[0]);
     } else {
