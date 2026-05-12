@@ -48,14 +48,6 @@ nix-build:
 nix-run:
     nix run --extra-experimental-features 'nix-command flakes'
 
-# Build the test VM image
-vm-build:
-    nix build .#vm --extra-experimental-features 'nix-command flakes'
-
-# Build and launch the test VM (QEMU, no graphics)
-vm:
-    nix run .#vm --extra-experimental-features 'nix-command flakes'
-
 # Update all flake inputs to latest
 flake-update:
     nix flake update --extra-experimental-features 'nix-command flakes'
