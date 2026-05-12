@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "nix-search wrapper, managed-file writer, and rebuild runner used by the nixbox TUI."
 
 [dependencies]
 anyhow = { workspace = true }
