@@ -1,0 +1,26 @@
+[package]
+name = "nixbox"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description.workspace = true
+
+[[bin]]
+name = "nixbox"
+path = "src/main.rs"
+
+[dependencies]
+nixbox-tui = { path = "../nixbox-tui", version = "0.1.0" }
+nixbox-nix = { path = "../nixbox-nix", version = "0.1.0" }
+nixbox-config = { path = "../nixbox-config", version = "0.1.0" }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

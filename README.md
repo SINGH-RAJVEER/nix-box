@@ -1,72 +1,68 @@
-# ArchBox
+# NixBox
 
-**ArchBox** is a modern, extensible command-line tool, writtend in rust, for managing a curated set of essential tools and applications on Arch Linux. It provides a unified interface for installing, searching, updating, and configuring packages from official repositories, the AUR, binaries, AppImages, Flatpaks, and more.
+A NixOS TUI package manager. Search a nixpkgs channel, pick a package, and NixBox writes it into your flake/home-manager config and runs the rebuild — all without leaving the terminal.
 
-## Features
+## What it does
 
-- Unified CLI for common Arch Linux tools and applications
-- Supports multiple installation methods: pacman, AUR, binaries, AppImage, Flatpak, source, and scripts
-- Dependency resolution and post-install configuration
-- Search, list, info, and removal commands
-- Profile and group-based installations
-- Interactive and non-interactive modes
-- Shell completions and progress indicators
-- YAML-based package definitions for easy extension
+- Live search against `nix search --json` over a configurable flake input (default `nixpkgs`).
+- Maintains a managed file (`nixbox-packages.nix`) in your NixOS config dir. NixBox owns this file end-to-end; it never edits hand-written config.
+- On select, appends the package, writes the file, then runs `home-manager switch` or `sudo nixos-rebuild switch` and streams the output into the TUI.
+- Toggle target (home-manager / nixos) with `Tab`. Setting persists in `~/.config/nixbox/settings.json`.
 
-## Installation
+## Wiring the managed file
 
-```sh
-git clone https://github.com/yourusername/archbox.git
-cd archbox
-cargo build --release
-sudo cp target/release/archbox /usr/local/bin/
+Add a single import to your existing config so NixBox's file is picked up.
+
+For **home-manager** (`~/.config/nixos/home.nix` or wherever your home config lives):
+
+```nix
+{
+  imports = [ ./nixbox-packages.nix ];
+}
 ```
 
-## Usage
+For **NixOS system** (`/etc/nixos/configuration.nix`):
 
-- Install packages:  
-  `archbox install neovim starship`
-  
-- Search for packages:  
-  `archbox search editor`
-  
-- List available or installed packages:  
-  `archbox list --installed`
-  
-- Show package info:  
-  `archbox info neovim`
-  
-- Remove packages:  
-  `archbox remove discord`
-  
-- Update definitions and packages:  
-  `archbox update`
-  
-- Manage profiles:  
-  `archbox profile list`
-  
-- Get recommendations:  
-  `archbox recommend`
+```nix
+{
+  imports = [ ./nixbox-packages.nix ];
+}
+```
 
-For all options, use `archbox --help`.
+After that, NixBox manages the package list inside `nixbox-packages.nix` between the `# nixbox:packages:start` / `# nixbox:packages:end` markers. Adjust nothing else in the file.
 
-## Configuration
+## Build
 
-Configuration is stored at `~/.config/archbox/config.yaml`.  
-You can view and edit settings using `archbox config`.
+```sh
+nix build           # via the flake
+# or
+cargo build --release
+```
 
-## Package Definitions
+## Run
 
-Package definitions are YAML files located in `data/packages/` or user-specified directories.  
-Refer to the provided examples to add or modify packages.
+```sh
+nix run            # via the flake
+# or
+./target/release/nixbox
+```
 
-## Contributing
+## Layout
 
-Contributions are welcome. Please open issues or pull requests for bug fixes, new features, or package definitions.  
-All contributions should follow Rust best practices and include appropriate documentation and tests where applicable.
+Cargo workspace:
 
----
+- `crates/nixbox` — binary entrypoint
+- `crates/nixbox-tui` — ratatui app, search/build views
+- `crates/nixbox-nix` — `nix search` wrapper, managed file writer, rebuild runner
+- `crates/nixbox-config` — persisted user settings (channel, target, paths)
 
-**Maintainer:** [SINGH-RAJVEER](https://github.com/SINGH-RAJVEER)
+## Keys
 
----
+| key       | action                       |
+| --------- | ---------------------------- |
+| type      | search                       |
+| ↑ / ↓     | move selection               |
+| Enter     | install selected             |
+| Tab       | toggle home-manager / nixos  |
+| Esc / ^C  | quit                         |
+| q         | leave build view             |
