@@ -108,9 +108,12 @@ pub fn settings_path() -> Result<PathBuf> {
 }
 
 fn nixos_config_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("NIXBOX_CONFIG_DIR") {
+        return PathBuf::from(dir);
+    }
     if let Some(base) = BaseDirs::new() {
-        base.config_dir().join("vm")
+        base.config_dir().join("nixos")
     } else {
-        PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/vm")
+        PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/nixos")
     }
 }

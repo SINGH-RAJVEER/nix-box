@@ -12,7 +12,11 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Rajveer Singh"]
 license = "MIT"
-repository = "https://github.com/SINGH-RAJVEER/Archbox"
+repository = "https://github.com/SINGH-RAJVEER/nix-box"
+homepage = "https://github.com/SINGH-RAJVEER/nix-box"
+readme = "README.md"
+keywords = ["nixos", "nix", "tui", "package-manager", "home-manager"]
+categories = ["command-line-utilities"]
 description = "TUI package manager for NixOS that wires selections into your flake + home-manager config"
 
 [workspace.dependencies]
