@@ -9,7 +9,7 @@ rustPlatform.buildRustPackage rec {
     hash = "sha256-+xOoEV4wUxLmeHZd7W32sVAMu6cCP4/NlSHAURkeCOM=";
   };
 
-  cargoHash = lib.fakeHash;
+  cargoHash = "sha256-3YJ56WxmTSNSSe8KhX0SLhMt1MXyDa1XAgUsyHHbLtI=";
 
   meta = with lib; {
     description = "TUI package manager for NixOS that wires selections into your flake + home-manager config";
