@@ -23,7 +23,7 @@ jobs:
       matrix:
         include:
           - language: rust
-            build-mode: autobuild
+            build-mode: manual
 
     steps:
     - name: Checkout repository
@@ -34,6 +34,9 @@ jobs:
       with:
         languages: ${{ matrix.language }}
         build-mode: ${{ matrix.build-mode }}
+
+    - name: Build
+      run: cargo build --release
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
