@@ -38,6 +38,7 @@
           packages = {
             default = nixbox;
             nixbox = nixbox;
+            nixbox-crate = pkgs.callPackage ./nix/package.nix {};
           } // nixpkgs.lib.optionalAttrs isVmHost {
             vm = self.nixosConfigurations.nixbox-vm.config.system.build.vm;
           };
