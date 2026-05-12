@@ -46,6 +46,14 @@ pub fn home_manager_switch_cmd(config_dir: &Path) -> (String, Vec<String>) {
     }
 }
 
+pub fn nixos_rebuild_switch_cmd(config_dir: &Path) -> (String, Vec<String>) {
+    let flake_ref = format!("{}#nixos", config_dir.display());
+    (
+        "sudo".into(),
+        vec!["nixos-rebuild".into(), "switch".into(), "--flake".into(), flake_ref],
+    )
+}
+
 pub async fn rebuild(command: &str, args: &[&str], tx: mpsc::Sender<BuildEvent>) -> Result<()> {
     let resolved = find_in_nix_profiles(command)
         .unwrap_or_else(|| PathBuf::from(command));
