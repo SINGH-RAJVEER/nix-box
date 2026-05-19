@@ -560,10 +560,13 @@ version = "0.1.4"
 dependencies = [
  "anyhow",
  "crossterm",
+ "directories",
  "futures",
  "nixbox-config",
  "nixbox-nix",
  "ratatui",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tui-input",
