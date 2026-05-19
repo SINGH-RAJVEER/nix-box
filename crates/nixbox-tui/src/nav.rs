@@ -1,6 +1,7 @@
 use nixbox_config::Target;
 
 use crate::app::{App, Mode, SearchInputMode, Tab, CHANNELS};
+use crate::theme;
 
 pub(crate) fn move_selection(app: &mut App, delta: i32) {
     if app.results.is_empty() {
@@ -48,13 +49,16 @@ pub(crate) fn toggle_target(app: &mut App) {
         Target::NixosSystem => Target::HomeManager,
     };
     let _ = app.config.save();
-    app.refresh_external_packages();
-    app.status = format!("Target switched to {}", app.config.target.label());
+    app.status = format!(
+        "Install target switched to {} (existing entries unchanged).",
+        app.config.target.label()
+    );
 }
 
 pub(crate) fn cycle_theme(app: &mut App) {
     app.theme_cursor = app.theme_index;
     app.mode = Mode::ThemeSelect;
+    let _ = theme::ALL; // ensure theme module is used
     app.status = "↑/↓ preview  ·  Enter confirm  ·  Esc cancel".into();
 }
 

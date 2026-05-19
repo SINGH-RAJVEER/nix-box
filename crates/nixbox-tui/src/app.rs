@@ -5,12 +5,13 @@ use std::time::Duration;
 use anyhow::Result;
 use nixbox_config::{Config, Target};
 use nixbox_nix::{
-    build::{home_manager_switch_cmd, nixos_rebuild_switch_cmd, rebuild, BuildEvent},
+    build::BuildEvent,
     manifest::ManagedFile,
-    search::{search, SearchHit},
+    scan::{scan, ExternalPackage, ScanTarget},
+    search::SearchHit,
     Manifest,
 };
-use crossterm::event::{Event as CtEvent, EventStream, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::EventStream;
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -19,10 +20,9 @@ use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
-use tokio::time::sleep;
-use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
+use crate::handlers::{handle_app_event, handle_terminal_event};
 use crate::theme;
 use crate::ui;
 
@@ -37,15 +37,29 @@ pub(crate) enum Mode {
 
 #[derive(Debug, Clone)]
 pub(crate) enum QueuedOp {
-    Install(SearchHit),
-    Uninstall(String),
+    Install { hit: SearchHit, scope: Target },
+    Uninstall { name: String, scope: Target },
+    Migrate { names: Vec<String>, scope: Target },
 }
 
 impl QueuedOp {
-    pub(crate) fn label(&self) -> String {
+    pub(crate) fn scope(&self) -> Target {
         match self {
-            QueuedOp::Install(hit) => format!("install {}", hit.attr),
-            QueuedOp::Uninstall(pname) => format!("remove {}", pname),
+            QueuedOp::Install { scope, .. }
+            | QueuedOp::Uninstall { scope, .. }
+            | QueuedOp::Migrate { scope, .. } => *scope,
+        }
+    }
+
+    pub(crate) fn label(&self) -> String {
+        let tag = self.scope().tag();
+        match self {
+            QueuedOp::Install { hit, .. } => format!("install {} [{}]", hit.attr, tag),
+            QueuedOp::Uninstall { name, .. } => format!("remove {} [{}]", name, tag),
+            QueuedOp::Migrate { names, .. } => match names.len() {
+                1 => format!("migrate {} [{}]", names[0], tag),
+                n => format!("migrate {} packages [{}]", n, tag),
+            },
         }
     }
 }
@@ -82,9 +96,30 @@ pub(crate) enum AppEvent {
     Build(BuildEvent),
 }
 
+/// A package tracked by nixbox's manifest (managed) — tagged with the
+/// target/scope it belongs to.
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedPackage {
+    pub name: String,
+    pub scope: Target,
+}
+
+/// The row currently under the cursor in the Installed tab.
+#[derive(Debug, Clone)]
+pub(crate) enum InstalledCursor {
+    Managed(ManagedPackage),
+    External(ExternalPackage),
+}
+
 pub(crate) struct App {
     pub(crate) config: Config,
-    pub(crate) manifest: Manifest,
+    /// Manifest of packages tracked in `nixbox-home-packages.nix`.
+    pub(crate) home_manifest: Manifest,
+    /// Manifest of packages tracked in `nixbox-system-packages.nix`.
+    pub(crate) nixos_manifest: Manifest,
+    /// Packages found declared directly in the user's main config files
+    /// (both home.nix and configuration.nix), tagged with their scope.
+    pub(crate) external_packages: Vec<ExternalPackage>,
     pub(crate) input: Input,
     pub(crate) results: Vec<SearchHit>,
     pub(crate) selected: usize,
@@ -108,20 +143,33 @@ pub(crate) struct App {
 }
 
 impl App {
-    fn new(config: Config, manifest: Manifest) -> Self {
-        let installed = manifest.packages.len();
+    fn new(
+        config: Config,
+        home_manifest: Manifest,
+        nixos_manifest: Manifest,
+        external_packages: Vec<ExternalPackage>,
+    ) -> Self {
+        let managed = home_manifest.packages.len() + nixos_manifest.packages.len();
+        let external = external_packages.len();
         let theme_index = theme::ALL
             .iter()
             .position(|t| t.name == config.theme)
             .unwrap_or(0);
+        let status = if external == 0 {
+            format!("{} packages tracked.", managed)
+        } else {
+            format!("{} managed  ·  {} external.", managed, external)
+        };
         Self {
             config,
-            manifest,
+            home_manifest,
+            nixos_manifest,
+            external_packages,
             input: Input::default(),
             results: Vec::new(),
             selected: 0,
             installed_selected: 0,
-            status: format!("{} packages tracked.", installed),
+            status,
             mode: Mode::Browsing,
             tab: Tab::Search,
             log: Vec::new(),
@@ -168,14 +216,119 @@ impl App {
         &theme::ALL[idx]
     }
 
-    pub(crate) fn installed_packages(&self) -> Vec<String> {
-        self.manifest.packages.iter().cloned().collect()
+    pub(crate) fn manifest_for(&self, scope: Target) -> &Manifest {
+        match scope {
+            Target::HomeManager => &self.home_manifest,
+            Target::NixosSystem => &self.nixos_manifest,
+        }
     }
+
+    pub(crate) fn manifest_for_mut(&mut self, scope: Target) -> &mut Manifest {
+        match scope {
+            Target::HomeManager => &mut self.home_manifest,
+            Target::NixosSystem => &mut self.nixos_manifest,
+        }
+    }
+
+    /// Returns all managed packages from both scopes, sorted by (scope, name)
+    /// so HM entries appear before NixOS entries.
+    pub(crate) fn managed_packages(&self) -> Vec<ManagedPackage> {
+        let mut out: Vec<ManagedPackage> = Vec::new();
+        for p in &self.home_manifest.packages {
+            out.push(ManagedPackage {
+                name: p.clone(),
+                scope: Target::HomeManager,
+            });
+        }
+        for p in &self.nixos_manifest.packages {
+            out.push(ManagedPackage {
+                name: p.clone(),
+                scope: Target::NixosSystem,
+            });
+        }
+        out
+    }
+
+    pub(crate) fn installed_total(&self) -> usize {
+        self.home_manifest.packages.len()
+            + self.nixos_manifest.packages.len()
+            + self.external_packages.len()
+    }
+
+    /// Returns the row currently under the cursor in the Installed tab.
+    pub(crate) fn installed_cursor(&self) -> Option<InstalledCursor> {
+        let managed = self.managed_packages();
+        let total = managed.len() + self.external_packages.len();
+        if total == 0 {
+            return None;
+        }
+        let idx = self.installed_selected.min(total - 1);
+        if idx < managed.len() {
+            Some(InstalledCursor::Managed(managed[idx].clone()))
+        } else {
+            Some(InstalledCursor::External(
+                self.external_packages[idx - managed.len()].clone(),
+            ))
+        }
+    }
+
+    /// Re-reads both main config files and refreshes `external_packages`,
+    /// excluding anything already tracked in either manifest.
+    pub(crate) fn refresh_external_packages(&mut self) {
+        self.external_packages = read_external_packages(
+            &self.config,
+            &self.home_manifest,
+            &self.nixos_manifest,
+        );
+        let total = self.installed_total();
+        if total == 0 {
+            self.installed_selected = 0;
+        } else if self.installed_selected >= total {
+            self.installed_selected = total - 1;
+        }
+    }
+}
+
+/// Scans both home.nix and configuration.nix and returns external packages
+/// from each, scope-tagged, excluding anything already in the matching
+/// manifest. The same package name can appear twice if declared in both
+/// scopes — that's intentional.
+pub(crate) fn read_external_packages(
+    config: &Config,
+    home_manifest: &Manifest,
+    nixos_manifest: &Manifest,
+) -> Vec<ExternalPackage> {
+    let mut out: Vec<ExternalPackage> = Vec::new();
+
+    if let Ok(found) = scan(
+        &config.main_file_for(Target::HomeManager),
+        ScanTarget::HomeManager,
+    ) {
+        out.extend(
+            found
+                .into_iter()
+                .filter(|ep| !home_manifest.packages.contains(&ep.name)),
+        );
+    }
+    if let Ok(found) = scan(
+        &config.main_file_for(Target::NixosSystem),
+        ScanTarget::Nixos,
+    ) {
+        out.extend(
+            found
+                .into_iter()
+                .filter(|ep| !nixos_manifest.packages.contains(&ep.name)),
+        );
+    }
+
+    out
 }
 
 pub async fn run() -> Result<()> {
     let config = Config::load_or_default()?;
-    let manifest = ManagedFile::new(config.managed_file()).load()?;
+    let home_manifest = ManagedFile::new(config.managed_file_for(Target::HomeManager)).load()?;
+    let nixos_manifest = ManagedFile::new(config.managed_file_for(Target::NixosSystem)).load()?;
+    let externals = read_external_packages(&config, &home_manifest, &nixos_manifest);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -183,7 +336,14 @@ pub async fn run() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = event_loop(&mut terminal, config, manifest).await;
+    let result = event_loop(
+        &mut terminal,
+        config,
+        home_manifest,
+        nixos_manifest,
+        externals,
+    )
+    .await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -195,9 +355,11 @@ pub async fn run() -> Result<()> {
 async fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     config: Config,
-    manifest: Manifest,
+    home_manifest: Manifest,
+    nixos_manifest: Manifest,
+    externals: Vec<ExternalPackage>,
 ) -> Result<()> {
-    let mut app = App::new(config, manifest);
+    let mut app = App::new(config, home_manifest, nixos_manifest, externals);
     let (tx, mut rx) = mpsc::channel::<AppEvent>(128);
     let mut term_events = EventStream::new();
     let mut spinner_tick = tokio::time::interval(Duration::from_millis(80));
@@ -222,437 +384,4 @@ async fn event_loop(
         }
     }
     Ok(())
-}
-
-async fn handle_terminal_event(
-    app: &mut App,
-    tx: &mpsc::Sender<AppEvent>,
-    ev: CtEvent,
-) -> Result<()> {
-    let CtEvent::Key(key) = ev else { return Ok(()) };
-    if key.kind != KeyEventKind::Press {
-        return Ok(());
-    }
-
-    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
-        app.should_quit = true;
-        return Ok(());
-    }
-
-    if let Mode::ChannelEdit = app.mode {
-        match key.code {
-            KeyCode::Down | KeyCode::Char('j') => {
-                app.channel_cursor = (app.channel_cursor + 1) % CHANNELS.len();
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                let n = CHANNELS.len();
-                app.channel_cursor = app.channel_cursor.checked_sub(1).unwrap_or(n - 1);
-            }
-            KeyCode::Enter => {
-                let new = CHANNELS[app.channel_cursor].to_string();
-                app.config.channel = new.clone();
-                let _ = app.config.save();
-                app.status = format!("Channel set to {}.", new);
-                app.mode = Mode::Browsing;
-            }
-            KeyCode::Esc => {
-                app.mode = Mode::Browsing;
-                app.status = format!("Channel unchanged: {}.", app.config.channel);
-            }
-            _ => {}
-        }
-        return Ok(());
-    }
-
-    if let Mode::ThemeSelect = app.mode {
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                let n = theme::ALL.len();
-                app.theme_cursor = app.theme_cursor.checked_sub(1).unwrap_or(n - 1);
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                app.theme_cursor = (app.theme_cursor + 1) % theme::ALL.len();
-            }
-            KeyCode::Enter => {
-                app.theme_index = app.theme_cursor;
-                app.config.theme = theme::ALL[app.theme_index].name.to_string();
-                let _ = app.config.save();
-                app.status = format!("Theme set to {}.", theme::ALL[app.theme_index].name);
-                app.mode = Mode::Browsing;
-            }
-            KeyCode::Esc => {
-                app.mode = Mode::Browsing;
-                app.status = format!("Theme: {}.", theme::ALL[app.theme_index].name);
-            }
-            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.mode = Mode::Browsing;
-                app.status = format!("Theme: {}.", theme::ALL[app.theme_index].name);
-            }
-            _ => {}
-        }
-        return Ok(());
-    }
-
-    // Esc in Search Insert mode → Normal mode instead of quitting
-    if matches!(key.code, KeyCode::Esc)
-        && matches!(app.tab, Tab::Search)
-        && matches!(app.search_input_mode, SearchInputMode::Insert)
-    {
-        app.search_input_mode = SearchInputMode::Normal;
-        return Ok(());
-    }
-
-    // Global keys (work on any tab)
-    match key.code {
-        KeyCode::Tab => {
-            cycle_tab(app);
-            return Ok(());
-        }
-        KeyCode::BackTab => {
-            cycle_tab_back(app);
-            return Ok(());
-        }
-        KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            toggle_target(app);
-            return Ok(());
-        }
-        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            cycle_theme(app);
-            return Ok(());
-        }
-        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            open_channel_edit(app);
-            return Ok(());
-        }
-        KeyCode::Esc => {
-            app.should_quit = true;
-            return Ok(());
-        }
-        _ => {}
-    }
-
-    match app.tab {
-        Tab::Search => match app.search_input_mode {
-            SearchInputMode::Insert => match key.code {
-                KeyCode::Down => move_selection(app, 1),
-                KeyCode::Up => move_selection(app, -1),
-                KeyCode::Enter => install_selected(app, tx).await?,
-                _ => {
-                    let before = app.input.value().to_string();
-                    app.input.handle_event(&CtEvent::Key(key));
-                    if app.input.value() != before {
-                        schedule_search(app, tx.clone());
-                    }
-                }
-            },
-            SearchInputMode::Normal => match key.code {
-                KeyCode::Down | KeyCode::Char('j') => move_selection(app, 1),
-                KeyCode::Up | KeyCode::Char('k') => move_selection(app, -1),
-                KeyCode::Char('l') => cycle_tab(app),
-                KeyCode::Char('h') => cycle_tab_back(app),
-                KeyCode::Enter => install_selected(app, tx).await?,
-                KeyCode::Char('i') | KeyCode::Char('a') => {
-                    app.search_input_mode = SearchInputMode::Insert;
-                }
-                _ => {}
-            },
-        },
-        Tab::Installed => match key.code {
-            KeyCode::Down | KeyCode::Char('j') => move_installed_selection(app, 1),
-            KeyCode::Up | KeyCode::Char('k') => move_installed_selection(app, -1),
-            KeyCode::Char('l') => cycle_tab(app),
-            KeyCode::Char('h') => cycle_tab_back(app),
-            KeyCode::Delete | KeyCode::Char('d') => uninstall_selected(app, tx).await?,
-            _ => {}
-        },
-        Tab::Building => match key.code {
-            KeyCode::Char('l') => cycle_tab(app),
-            KeyCode::Char('h') => cycle_tab_back(app),
-            _ => {}
-        },
-        Tab::Queue => match key.code {
-            KeyCode::Char('l') => cycle_tab(app),
-            KeyCode::Char('h') => cycle_tab_back(app),
-            _ => {}
-        },
-    }
-    Ok(())
-}
-
-fn handle_app_event(app: &mut App, tx: &mpsc::Sender<AppEvent>, ev: AppEvent) {
-    match ev {
-        AppEvent::SearchDone { epoch, hits } => {
-            if epoch == app.search_epoch {
-                app.searching = false;
-                let count = hits.len();
-                app.results = hits;
-                app.selected = 0;
-                app.status = format!("{} matches for `{}`", count, app.latest_query);
-            }
-        }
-        AppEvent::SearchFailed { epoch, error } => {
-            if epoch == app.search_epoch {
-                app.searching = false;
-                app.results.clear();
-                app.status = format!("search failed: {}", error);
-            }
-        }
-        AppEvent::Build(BuildEvent::Line(line)) => {
-            app.log.push(line);
-            if app.log.len() > 1000 {
-                let drop_to = app.log.len() - 1000;
-                app.log.drain(0..drop_to);
-            }
-        }
-        AppEvent::Build(BuildEvent::Finished(result)) => {
-            let label = app.current_op_label.take().unwrap_or_else(|| "build".into());
-            app.build_in_progress = false;
-            app.status = match &result {
-                Ok(()) => format!("{} done.", label),
-                Err(err) => format!("{} failed: {}.", label, err),
-            };
-            drain_queue(app, tx);
-            if !app.visible_tabs().contains(&app.tab) {
-                app.tab = Tab::Search;
-            }
-        }
-    }
-}
-
-fn drain_queue(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
-    if app.build_in_progress {
-        return;
-    }
-    let Some(op) = app.queue.pop_front() else { return };
-    let label = op.label();
-    if let Err(e) = apply_op_to_manifest(app, &op) {
-        app.status = format!("{}: failed to write manifest: {}", label, e);
-        // Try the next one rather than getting stuck.
-        drain_queue(app, tx);
-        return;
-    }
-    if !app.visible_tabs().contains(&app.tab) {
-        // shouldn't happen but be safe
-        app.tab = Tab::Search;
-    }
-    spawn_rebuild(app, tx, label);
-}
-
-fn apply_op_to_manifest(app: &mut App, op: &QueuedOp) -> Result<()> {
-    match op {
-        QueuedOp::Install(hit) => {
-            app.manifest.add(&hit.attr);
-        }
-        QueuedOp::Uninstall(pname) => {
-            app.manifest.remove(pname);
-            if app.installed_selected >= app.manifest.packages.len()
-                && app.installed_selected > 0
-            {
-                app.installed_selected -= 1;
-            }
-        }
-    }
-    let managed = write_manifest(app)?;
-    app.log.push(format!(
-        "Wrote {} ({}). {}...",
-        managed.path().display(),
-        app.config.target.label(),
-        op.label(),
-    ));
-    Ok(())
-}
-
-fn move_selection(app: &mut App, delta: i32) {
-    if app.results.is_empty() {
-        return;
-    }
-    let len = app.results.len() as i32;
-    let next = (app.selected as i32 + delta).rem_euclid(len);
-    app.selected = next as usize;
-}
-
-fn move_installed_selection(app: &mut App, delta: i32) {
-    let len = app.manifest.packages.len();
-    if len == 0 {
-        return;
-    }
-    let next = (app.installed_selected as i32 + delta).rem_euclid(len as i32);
-    app.installed_selected = next as usize;
-}
-
-fn cycle_tab(app: &mut App) {
-    let tabs = app.visible_tabs();
-    let cur = tabs.iter().position(|t| *t == app.tab).unwrap_or(0);
-    let next = tabs[(cur + 1) % tabs.len()];
-    set_tab(app, next);
-}
-
-fn cycle_tab_back(app: &mut App) {
-    let tabs = app.visible_tabs();
-    let cur = tabs.iter().position(|t| *t == app.tab).unwrap_or(0);
-    let prev = tabs[(cur + tabs.len() - 1) % tabs.len()];
-    set_tab(app, prev);
-}
-
-fn set_tab(app: &mut App, tab: Tab) {
-    app.tab = tab;
-    if matches!(tab, Tab::Search) {
-        app.search_input_mode = SearchInputMode::Normal;
-    }
-    app.status = format!("{} tab", tab.label());
-}
-
-fn toggle_target(app: &mut App) {
-    app.config.target = match app.config.target {
-        Target::HomeManager => Target::NixosSystem,
-        Target::NixosSystem => Target::HomeManager,
-    };
-    let _ = app.config.save();
-    app.status = format!("Target switched to {}", app.config.target.label());
-}
-
-fn cycle_theme(app: &mut App) {
-    app.theme_cursor = app.theme_index;
-    app.mode = Mode::ThemeSelect;
-    app.status = "↑/↓ preview  ·  Enter confirm  ·  Esc cancel".into();
-}
-
-fn open_channel_edit(app: &mut App) {
-    app.channel_cursor = CHANNELS
-        .iter()
-        .position(|c| *c == app.config.channel)
-        .unwrap_or(0);
-    app.mode = Mode::ChannelEdit;
-    app.status = "j/k navigate  ↵ confirm  esc cancel".into();
-}
-
-fn write_manifest(app: &App) -> Result<ManagedFile> {
-    let managed = ManagedFile::new(app.config.managed_file());
-    match app.config.target {
-        Target::HomeManager => managed.write_home_manager(&app.manifest)?,
-        Target::NixosSystem => managed.write_nixos(&app.manifest)?,
-    }
-    Ok(managed)
-}
-
-fn spawn_rebuild(app: &mut App, tx: &mpsc::Sender<AppEvent>, action_label: String) {
-    app.build_in_progress = true;
-    app.current_op_label = Some(action_label.clone());
-    app.log.clear();
-    app.status = format!("{}...", action_label);
-
-    let target = app.config.target;
-    let config_dir = app.config.home_manager_dir();
-    let app_tx = tx.clone();
-    tokio::spawn(async move {
-        let (build_tx, mut build_rx) = mpsc::channel::<BuildEvent>(64);
-        let forward_tx = app_tx.clone();
-        let forwarder = tokio::spawn(async move {
-            while let Some(ev) = build_rx.recv().await {
-                if forward_tx.send(AppEvent::Build(ev)).await.is_err() {
-                    break;
-                }
-            }
-        });
-        let cmd_owned;
-        let args_owned;
-        let (cmd, args): (&str, Vec<&str>) = match target {
-            Target::HomeManager => {
-                let (c, a) = home_manager_switch_cmd(&config_dir);
-                cmd_owned = c;
-                args_owned = a;
-                (cmd_owned.as_str(), args_owned.iter().map(|s| s.as_str()).collect())
-            }
-            Target::NixosSystem => {
-                let (c, a) = nixos_rebuild_switch_cmd(&config_dir);
-                cmd_owned = c;
-                args_owned = a;
-                (cmd_owned.as_str(), args_owned.iter().map(|s| s.as_str()).collect())
-            }
-        };
-        if let Err(e) = rebuild(cmd, &args, build_tx.clone()).await {
-            let _ = build_tx
-                .send(BuildEvent::Finished(Err(e.to_string())))
-                .await;
-        }
-        drop(build_tx);
-        let _ = forwarder.await;
-    });
-}
-
-async fn install_selected(app: &mut App, tx: &mpsc::Sender<AppEvent>) -> Result<()> {
-    let Some(hit) = app.results.get(app.selected).cloned() else {
-        app.status = "No selection.".into();
-        return Ok(());
-    };
-
-    if app.manifest.packages.contains(&hit.attr)
-        || app.queue.iter().any(|op| matches!(op, QueuedOp::Install(h) if h.attr == hit.attr))
-    {
-        app.status = format!("{} already tracked or queued.", hit.attr);
-        return Ok(());
-    }
-
-    let attr = hit.attr.clone();
-    app.queue.push_back(QueuedOp::Install(hit));
-    if app.build_in_progress {
-        app.status = format!("Queued install: {}.", attr);
-        app.tab = Tab::Queue;
-    } else {
-        app.tab = Tab::Building;
-        drain_queue(app, tx);
-    }
-    Ok(())
-}
-
-async fn uninstall_selected(app: &mut App, tx: &mpsc::Sender<AppEvent>) -> Result<()> {
-    let packages = app.installed_packages();
-    let Some(pname) = packages.get(app.installed_selected).cloned() else {
-        app.status = "No selection.".into();
-        return Ok(());
-    };
-
-    if app.queue.iter().any(|op| matches!(op, QueuedOp::Uninstall(p) if *p == pname)) {
-        app.status = format!("{} already queued for removal.", pname);
-        return Ok(());
-    }
-
-    app.queue.push_back(QueuedOp::Uninstall(pname.clone()));
-    if app.build_in_progress {
-        app.status = format!("Queued remove: {}.", pname);
-        app.tab = Tab::Queue;
-    } else {
-        app.tab = Tab::Building;
-        drain_queue(app, tx);
-    }
-    Ok(())
-}
-
-fn schedule_search(app: &mut App, tx: mpsc::Sender<AppEvent>) {
-    let query = app.input.value().to_string();
-    if query.is_empty() {
-        return;
-    }
-    app.searching = true;
-    app.search_epoch += 1;
-    let epoch = app.search_epoch;
-    let channel = app.config.channel.clone();
-    app.latest_query = query.clone();
-
-    tokio::spawn(async move {
-        sleep(Duration::from_millis(180)).await;
-        match search(&channel, &query).await {
-            Ok(hits) => {
-                let _ = tx.send(AppEvent::SearchDone { epoch, hits }).await;
-            }
-            Err(e) => {
-                let _ = tx
-                    .send(AppEvent::SearchFailed {
-                        epoch,
-                        error: e.to_string(),
-                    })
-                    .await;
-            }
-        }
-    });
 }

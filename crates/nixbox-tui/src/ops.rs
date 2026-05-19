@@ -12,22 +12,33 @@ use tokio::time::sleep;
 
 use crate::app::{App, AppEvent, InstalledCursor, QueuedOp, Tab};
 
-pub(crate) fn write_manifest(app: &App) -> Result<ManagedFile> {
-    let managed = ManagedFile::new(app.config.managed_file());
-    match app.config.target {
-        Target::HomeManager => managed.write_home_manager(&app.manifest)?,
-        Target::NixosSystem => managed.write_nixos(&app.manifest)?,
+fn scope_to_scan_target(scope: Target) -> ScanTarget {
+    match scope {
+        Target::HomeManager => ScanTarget::HomeManager,
+        Target::NixosSystem => ScanTarget::Nixos,
+    }
+}
+
+pub(crate) fn write_manifest(app: &App, scope: Target) -> Result<ManagedFile> {
+    let managed = ManagedFile::new(app.config.managed_file_for(scope));
+    match scope {
+        Target::HomeManager => managed.write_home_manager(app.manifest_for(scope))?,
+        Target::NixosSystem => managed.write_nixos(app.manifest_for(scope))?,
     }
     Ok(managed)
 }
 
-pub(crate) fn spawn_rebuild(app: &mut App, tx: &mpsc::Sender<AppEvent>, action_label: String) {
+pub(crate) fn spawn_rebuild(
+    app: &mut App,
+    tx: &mpsc::Sender<AppEvent>,
+    scope: Target,
+    action_label: String,
+) {
     app.build_in_progress = true;
     app.current_op_label = Some(action_label.clone());
     app.log.clear();
     app.status = format!("{}...", action_label);
 
-    let target = app.config.target;
     let config_dir = app.config.home_manager_dir();
     let app_tx = tx.clone();
     tokio::spawn(async move {
@@ -42,7 +53,7 @@ pub(crate) fn spawn_rebuild(app: &mut App, tx: &mpsc::Sender<AppEvent>, action_l
         });
         let cmd_owned;
         let args_owned;
-        let (cmd, args): (&str, Vec<&str>) = match target {
+        let (cmd, args): (&str, Vec<&str>) = match scope {
             Target::HomeManager => {
                 let (c, a) = home_manager_switch_cmd(&config_dir);
                 cmd_owned = c;
@@ -72,6 +83,7 @@ pub(crate) fn drain_queue(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
     }
     let Some(op) = app.queue.pop_front() else { return };
     let label = op.label();
+    let scope = op.scope();
     if let Err(e) = apply_op_to_manifest(app, &op) {
         app.status = format!("{}: failed to write manifest: {}", label, e);
         drain_queue(app, tx);
@@ -80,50 +92,51 @@ pub(crate) fn drain_queue(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
     if !app.visible_tabs().contains(&app.tab) {
         app.tab = Tab::Search;
     }
-    spawn_rebuild(app, tx, label);
+    spawn_rebuild(app, tx, scope, label);
 }
 
 fn apply_op_to_manifest(app: &mut App, op: &QueuedOp) -> Result<()> {
+    let scope = op.scope();
     match op {
-        QueuedOp::Install(hit) => {
-            app.manifest.add(&hit.attr);
+        QueuedOp::Install { hit, .. } => {
+            app.manifest_for_mut(scope).add(&hit.attr);
         }
-        QueuedOp::Uninstall(pname) => {
-            app.manifest.remove(pname);
-            let total = app.installed_total();
-            if total == 0 {
-                app.installed_selected = 0;
-            } else if app.installed_selected >= total {
-                app.installed_selected = total - 1;
-            }
+        QueuedOp::Uninstall { name, .. } => {
+            app.manifest_for_mut(scope).remove(name);
         }
-        QueuedOp::Migrate(names) => {
-            let scan_target = match app.config.target {
-                Target::HomeManager => ScanTarget::HomeManager,
-                Target::NixosSystem => ScanTarget::Nixos,
-            };
-            let source = app.config.main_file();
-            let removed = remove_from_source(&source, scan_target, names)?;
+        QueuedOp::Migrate { names, .. } => {
+            let source = app.config.main_file_for(scope);
+            let removed = remove_from_source(&source, scope_to_scan_target(scope), names)?;
             for name in &removed {
-                app.manifest.add(name);
+                app.manifest_for_mut(scope).add(name);
             }
-            app.external_packages.retain(|p| !removed.contains(&p.name));
-            let total = app.installed_total();
-            if total == 0 {
-                app.installed_selected = 0;
-            } else if app.installed_selected >= total {
-                app.installed_selected = total - 1;
-            }
+            // Drop any externals that just moved into the manifest.
+            app.external_packages.retain(|ep| {
+                !(ep_target_eq(ep.scope, scope) && removed.contains(&ep.name))
+            });
         }
     }
-    let managed = write_manifest(app)?;
+    let managed = write_manifest(app, scope)?;
     app.log.push(format!(
         "Wrote {} ({}). {}...",
         managed.path().display(),
-        app.config.target.label(),
+        scope.label(),
         op.label(),
     ));
+    let total = app.installed_total();
+    if total == 0 {
+        app.installed_selected = 0;
+    } else if app.installed_selected >= total {
+        app.installed_selected = total - 1;
+    }
     Ok(())
+}
+
+fn ep_target_eq(scan_scope: ScanTarget, target: Target) -> bool {
+    matches!(
+        (scan_scope, target),
+        (ScanTarget::HomeManager, Target::HomeManager) | (ScanTarget::Nixos, Target::NixosSystem)
+    )
 }
 
 pub(crate) async fn install_selected(app: &mut App, tx: &mpsc::Sender<AppEvent>) -> Result<()> {
@@ -132,15 +145,19 @@ pub(crate) async fn install_selected(app: &mut App, tx: &mpsc::Sender<AppEvent>)
         return Ok(());
     };
 
-    if app.manifest.packages.contains(&hit.attr)
-        || app.queue.iter().any(|op| matches!(op, QueuedOp::Install(h) if h.attr == hit.attr))
-    {
+    let scope = app.config.target;
+    let already_tracked = app.manifest_for(scope).packages.contains(&hit.attr);
+    let already_queued = app.queue.iter().any(|op| match op {
+        QueuedOp::Install { hit: h, scope: s } => *s == scope && h.attr == hit.attr,
+        _ => false,
+    });
+    if already_tracked || already_queued {
         app.status = format!("{} already tracked or queued.", hit.attr);
         return Ok(());
     }
 
     let attr = hit.attr.clone();
-    app.queue.push_back(QueuedOp::Install(hit));
+    app.queue.push_back(QueuedOp::Install { hit, scope });
     if app.build_in_progress {
         app.status = format!("Queued install: {}.", attr);
         app.tab = Tab::Queue;
@@ -155,20 +172,40 @@ pub(crate) async fn uninstall_selected(
     app: &mut App,
     tx: &mpsc::Sender<AppEvent>,
 ) -> Result<()> {
-    let packages = app.installed_packages();
-    let Some(pname) = packages.get(app.installed_selected).cloned() else {
-        app.status = "No selection.".into();
-        return Ok(());
+    let cursor = match app.installed_cursor() {
+        Some(c) => c,
+        None => {
+            app.status = "No selection.".into();
+            return Ok(());
+        }
+    };
+    let pkg = match cursor {
+        InstalledCursor::Managed(p) => p,
+        InstalledCursor::External(ep) => {
+            app.status = format!(
+                "{} is external (in {}) — press m to migrate first.",
+                ep.name, ep.source_attr,
+            );
+            return Ok(());
+        }
     };
 
-    if app.queue.iter().any(|op| matches!(op, QueuedOp::Uninstall(p) if *p == pname)) {
-        app.status = format!("{} already queued for removal.", pname);
+    let scope = pkg.scope;
+    if app.queue.iter().any(|op| match op {
+        QueuedOp::Uninstall { name, scope: s } => *s == scope && *name == pkg.name,
+        _ => false,
+    }) {
+        app.status = format!("{} already queued for removal.", pkg.name);
         return Ok(());
     }
 
-    app.queue.push_back(QueuedOp::Uninstall(pname.clone()));
+    let name = pkg.name.clone();
+    app.queue.push_back(QueuedOp::Uninstall {
+        name: name.clone(),
+        scope,
+    });
     if app.build_in_progress {
-        app.status = format!("Queued remove: {}.", pname);
+        app.status = format!("Queued remove: {} [{}].", name, scope.tag());
         app.tab = Tab::Queue;
     } else {
         app.tab = Tab::Building;
@@ -187,9 +224,8 @@ pub(crate) async fn migrate_selected(app: &mut App, tx: &mpsc::Sender<AppEvent>)
     };
     let ep = match cursor {
         InstalledCursor::External(ep) => ep,
-        InstalledCursor::Managed(name) => {
-            app.status =
-                format!("{} is already managed — press d to uninstall.", name);
+        InstalledCursor::Managed(p) => {
+            app.status = format!("{} is already managed — press d to uninstall.", p.name);
             return Ok(());
         }
     };
@@ -200,14 +236,24 @@ pub(crate) async fn migrate_selected(app: &mut App, tx: &mpsc::Sender<AppEvent>)
         );
         return Ok(());
     }
+    let scope = match ep.scope {
+        ScanTarget::HomeManager => Target::HomeManager,
+        ScanTarget::Nixos => Target::NixosSystem,
+    };
     let name = ep.name.clone();
-    if app.queue.iter().any(|op| matches!(op, QueuedOp::Migrate(ns) if ns.contains(&name))) {
+    if app.queue.iter().any(|op| match op {
+        QueuedOp::Migrate { names, scope: s } => *s == scope && names.contains(&name),
+        _ => false,
+    }) {
         app.status = format!("{} already queued for migration.", name);
         return Ok(());
     }
-    app.queue.push_back(QueuedOp::Migrate(vec![name.clone()]));
+    app.queue.push_back(QueuedOp::Migrate {
+        names: vec![name.clone()],
+        scope,
+    });
     if app.build_in_progress {
-        app.status = format!("Queued migrate: {}.", name);
+        app.status = format!("Queued migrate: {} [{}].", name, scope.tag());
         app.tab = Tab::Queue;
     } else {
         app.tab = Tab::Building;
@@ -217,22 +263,44 @@ pub(crate) async fn migrate_selected(app: &mut App, tx: &mpsc::Sender<AppEvent>)
 }
 
 pub(crate) async fn migrate_all(app: &mut App, tx: &mpsc::Sender<AppEvent>) -> Result<()> {
-    let names: Vec<String> = app
-        .external_packages
-        .iter()
-        .filter(|ep| ep.migratable)
-        .map(|ep| ep.name.clone())
-        .collect();
-    if names.is_empty() {
+    let mut hm: Vec<String> = Vec::new();
+    let mut nx: Vec<String> = Vec::new();
+    for ep in &app.external_packages {
+        if !ep.migratable {
+            continue;
+        }
+        match ep.scope {
+            ScanTarget::HomeManager => hm.push(ep.name.clone()),
+            ScanTarget::Nixos => nx.push(ep.name.clone()),
+        }
+    }
+    if hm.is_empty() && nx.is_empty() {
         app.status = "No migratable external packages found.".into();
         return Ok(());
     }
-    let label = format!("migrate {} packages", names.len());
-    app.queue.push_back(QueuedOp::Migrate(names));
+    let hm_count = hm.len();
+    let nx_count = nx.len();
+    if !hm.is_empty() {
+        app.queue.push_back(QueuedOp::Migrate {
+            names: hm,
+            scope: Target::HomeManager,
+        });
+    }
+    if !nx.is_empty() {
+        app.queue.push_back(QueuedOp::Migrate {
+            names: nx,
+            scope: Target::NixosSystem,
+        });
+    }
+    let summary = format!(
+        "Queued migrate-all ({} hm, {} nixos).",
+        hm_count, nx_count,
+    );
     if app.build_in_progress {
-        app.status = format!("Queued {}.", label);
+        app.status = summary;
         app.tab = Tab::Queue;
     } else {
+        app.status = summary;
         app.tab = Tab::Building;
         drain_queue(app, tx);
     }
