@@ -175,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_state_serializes_to_empty_fields() {
+    fn default_state_is_empty() {
         let state = PersistedState::default();
         assert!(state.is_empty());
     }
