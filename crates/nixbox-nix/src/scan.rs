@@ -593,4 +593,32 @@ mod tests {
         assert!(!after.contains("fd"));
         assert!(!after.contains("jq"));
     }
+
+    #[test]
+    #[ignore = "reads live config files; run with --ignored to inspect"]
+    fn real_config_detection() {
+        let home_nix = std::path::Path::new("/home/rajveer/.config/nixos/home.nix");
+        let config_nix = std::path::Path::new("/home/rajveer/.config/nixos/configuration.nix");
+
+        println!("\n=== HomeManager scan ({}) ===", home_nix.display());
+        let hm = parse(&fs::read_to_string(home_nix).unwrap(), ScanTarget::HomeManager);
+        println!("Found {} entries:", hm.len());
+        for ep in &hm {
+            println!("  {} {:<30} in {} (line {})",
+                if ep.migratable { "[M]" } else { "[-]" },
+                ep.name, ep.source_attr, ep.line + 1);
+        }
+
+        println!("\n=== NixOS scan ({}) ===", config_nix.display());
+        let nx = parse(&fs::read_to_string(config_nix).unwrap(), ScanTarget::Nixos);
+        println!("Found {} entries:", nx.len());
+        for ep in &nx {
+            println!("  {} {:<30} in {} (line {})",
+                if ep.migratable { "[M]" } else { "[-]" },
+                ep.name, ep.source_attr, ep.line + 1);
+        }
+
+        println!("\nTotal: {} hm + {} nixos = {} packages detected",
+            hm.len(), nx.len(), hm.len() + nx.len());
+    }
 }
