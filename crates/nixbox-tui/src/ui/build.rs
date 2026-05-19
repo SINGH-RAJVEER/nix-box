@@ -22,14 +22,52 @@ pub(super) fn draw_build_body(f: &mut Frame, area: Rect, app: &App) {
 
     let mut text: Vec<Line> = Vec::new();
     if app.build_in_progress {
-        text.push(build_progress_bar(app.spinner_frame, inner_width, t));
+        text.push(match app.build_progress {
+            Some(pct) => build_fill_bar(pct, inner_width, t),
+            None => build_indeterminate_bar(app.spinner_frame, inner_width, t),
+        });
         text.push(Line::raw(""));
     }
     text.extend(app.log[start..].iter().map(|l| Line::from(l.clone())));
     f.render_widget(Paragraph::new(text).block(block), area);
 }
 
-fn build_progress_bar(frame: usize, width: u16, t: &theme::Theme) -> Line<'static> {
+fn build_fill_bar(pct: f32, width: u16, t: &theme::Theme) -> Line<'static> {
+    let w = width as usize;
+    if w < 4 {
+        return Line::raw("");
+    }
+    let filled_cells = ((pct * w as f32).round() as usize).min(w);
+    let empty_cells = w.saturating_sub(filled_cells);
+    let pct_label = format!(" {:3.0}% ", pct * 100.0);
+    let label_start = (w.saturating_sub(pct_label.len())) / 2;
+    let label_end = label_start + pct_label.len();
+
+    // Build each half of the bar directly, splicing in the label in-place.
+    let mut filled = String::with_capacity(filled_cells * 3);
+    let mut empty = String::with_capacity(empty_cells * 3);
+    for i in 0..w {
+        let ch = if i >= label_start && i < label_end {
+            pct_label.as_bytes()[i - label_start] as char
+        } else if i < filled_cells {
+            '█'
+        } else {
+            '░'
+        };
+        if i < filled_cells {
+            filled.push(ch);
+        } else {
+            empty.push(ch);
+        }
+    }
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    Line::from(vec![
+        Span::styled(filled, t.title_style()),
+        Span::styled(empty, dim),
+    ])
+}
+
+fn build_indeterminate_bar(frame: usize, width: u16, t: &theme::Theme) -> Line<'static> {
     let w = width as usize;
     if w < 4 {
         return Line::raw("");

@@ -35,6 +35,7 @@ pub(crate) fn spawn_rebuild(
     action_label: String,
 ) {
     app.build_in_progress = true;
+    app.build_progress = None;
     app.current_op_label = Some(action_label.clone());
     app.log.clear();
     app.status = format!("{}...", action_label);
@@ -310,6 +311,12 @@ pub(crate) async fn migrate_all(app: &mut App, tx: &mpsc::Sender<AppEvent>) -> R
 pub(crate) fn schedule_search(app: &mut App, tx: mpsc::Sender<AppEvent>) {
     let query = app.input.value().to_string();
     if query.is_empty() {
+        app.search_epoch += 1;
+        app.searching = false;
+        app.results.clear();
+        app.selected = 0;
+        app.latest_query = String::new();
+        app.status = "Type to search packages.".into();
         return;
     }
     app.searching = true;

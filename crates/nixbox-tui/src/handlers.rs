@@ -177,6 +177,9 @@ pub(crate) fn handle_app_event(app: &mut App, tx: &mpsc::Sender<AppEvent>, ev: A
             }
         }
         AppEvent::Build(BuildEvent::Line(line)) => {
+            if let Some(p) = parse_nix_progress(&line) {
+                app.build_progress = Some(p);
+            }
             app.log.push(line);
             if app.log.len() > 1000 {
                 let drop_to = app.log.len() - 1000;
@@ -186,6 +189,7 @@ pub(crate) fn handle_app_event(app: &mut App, tx: &mpsc::Sender<AppEvent>, ev: A
         AppEvent::Build(BuildEvent::Finished(result)) => {
             let label = app.current_op_label.take().unwrap_or_else(|| "build".into());
             app.build_in_progress = false;
+            app.build_progress = None;
             app.status = match &result {
                 Ok(()) => format!("{} done.", label),
                 Err(err) => format!("{} failed: {}.", label, err),
@@ -198,5 +202,63 @@ pub(crate) fn handle_app_event(app: &mut App, tx: &mpsc::Sender<AppEvent>, ev: A
                 app.tab = Tab::Search;
             }
         }
+    }
+}
+
+/// Parse nix/home-manager progress from lines like `[2/5]` or `[2/5 built, ...]`.
+fn parse_nix_progress(line: &str) -> Option<f32> {
+    let start = line.find('[')?;
+    let rest = &line[start + 1..];
+    let end = rest.find(']')?;
+    let inner = &rest[..end];
+    let slash = inner.find('/')?;
+    let current: usize = inner[..slash].trim().parse().ok()?;
+    let after_slash = inner[slash + 1..].trim();
+    let digit_end = after_slash
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(after_slash.len());
+    let total: usize = after_slash[..digit_end].parse().ok()?;
+    if total == 0 {
+        return None;
+    }
+    Some((current as f32 / total as f32).clamp(0.0, 1.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_nix_progress;
+
+    #[test]
+    fn parses_simple_fraction() {
+        assert_eq!(parse_nix_progress("[2/5]"), Some(0.4));
+    }
+
+    #[test]
+    fn parses_nix_build_format() {
+        let p = parse_nix_progress("[0/1 built, 1 copied (0.6 MiB), 0.0 MiB DL]");
+        assert_eq!(p, Some(0.0));
+        let p = parse_nix_progress("[1/1 built, 1 copied (0.6 MiB), 0.0 MiB DL]");
+        assert_eq!(p, Some(1.0));
+    }
+
+    #[test]
+    fn parses_home_manager_format() {
+        assert_eq!(parse_nix_progress("[1/4] building ..."), Some(0.25));
+        assert_eq!(parse_nix_progress("[3/4] activating"), Some(0.75));
+    }
+
+    #[test]
+    fn returns_none_for_zero_total() {
+        assert_eq!(parse_nix_progress("[0/0]"), None);
+    }
+
+    #[test]
+    fn returns_none_for_no_bracket() {
+        assert_eq!(parse_nix_progress("building '/nix/store/...'"), None);
+    }
+
+    #[test]
+    fn clamps_to_one() {
+        assert_eq!(parse_nix_progress("[5/4]"), Some(1.0));
     }
 }

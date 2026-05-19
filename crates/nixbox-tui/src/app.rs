@@ -136,6 +136,7 @@ pub(crate) struct App {
     pub(crate) search_input_mode: SearchInputMode,
     pub(crate) searching: bool,
     pub(crate) build_in_progress: bool,
+    pub(crate) build_progress: Option<f32>,
     pub(crate) spinner_frame: usize,
     pub(crate) queue: VecDeque<QueuedOp>,
     pub(crate) current_op_label: Option<String>,
@@ -181,6 +182,7 @@ impl App {
             search_input_mode: SearchInputMode::Normal,
             searching: false,
             build_in_progress: false,
+            build_progress: None,
             spinner_frame: 0,
             queue: VecDeque::new(),
             current_op_label: None,
@@ -190,7 +192,7 @@ impl App {
 
     pub(crate) fn visible_tabs(&self) -> Vec<Tab> {
         let mut tabs = vec![Tab::Search, Tab::Installed];
-        if self.build_in_progress {
+        if self.build_in_progress || !self.log.is_empty() {
             tabs.push(Tab::Building);
         }
         if !self.queue.is_empty() {
