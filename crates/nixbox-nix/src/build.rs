@@ -133,9 +133,6 @@ where
     let mut reader = BufReader::new(stream).lines();
     while let Ok(Some(line)) = reader.next_line().await {
         let text = line.trim_end().to_string();
-        if text.is_empty() {
-            continue;
-        }
         if tx.send(BuildEvent::Line(text)).await.is_err() {
             break;
         }
