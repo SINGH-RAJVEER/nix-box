@@ -16,7 +16,9 @@
         let
           overlays = [ (import rust-overlay) ];
           pkgs = import nixpkgs { inherit system overlays; };
-          rustToolchain = pkgs.rust-bin.stable.latest.default;
+          rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+            extensions = [ "rust-src" "rust-analyzer" ];
+          };
           nixbox = pkgs.rustPlatform.buildRustPackage {
             pname = "nixbox";
             version = "0.1.0";
@@ -34,9 +36,10 @@
           devShells.default = pkgs.mkShell {
             packages = [
               rustToolchain
-              pkgs.rust-analyzer
               pkgs.nix
             ];
+
+            RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
           };
         });
     in
