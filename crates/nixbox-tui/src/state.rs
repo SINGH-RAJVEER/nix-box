@@ -94,7 +94,11 @@ pub(crate) fn restore(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
     if let Some(ip) = saved.in_progress {
         // The manifest was already written for this op before it was killed —
         // re-run the rebuild to actually apply it.
-        let label = format!("resume {}", ip.label);
+        let label = if ip.label.starts_with("resume ") {
+            ip.label.clone()
+        } else {
+            format!("resume {}", ip.label)
+        };
         app.tab = Tab::Building;
         app.status = format!("Resuming interrupted build: {}.", ip.label);
         spawn_rebuild(app, tx, ip.scope, label);
