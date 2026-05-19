@@ -13,17 +13,24 @@ const TAG_WIDTH: usize = 7; // "[nixos]"
 
 pub(super) fn draw_installed_body(f: &mut Frame, area: Rect, app: &App) {
     let t = app.theme();
-    let managed = app.managed_packages();
-    let external = &app.external_packages;
+    let managed = app.filtered_managed_packages();
+    let external = app.filtered_external_packages();
+    let filter = app.installed_filter();
 
     if managed.is_empty() && external.is_empty() {
         let block = titled_panel(t, Span::styled("Installed packages", t.title_style()));
-        f.render_widget(
-            Paragraph::new(
-                "No packages tracked yet.\n\nSwitch to the Search tab and press ↵ on a result to install.",
+        let body = if filter.is_some() {
+            format!(
+                "No installed packages match \"{}\".",
+                app.installed_input.value()
             )
-            .block(block)
-            .wrap(Wrap { trim: false }),
+        } else {
+            "No packages tracked yet.\n\nSwitch to the Search tab and press ↵ on a result to install.".to_string()
+        };
+        f.render_widget(
+            Paragraph::new(body)
+                .block(block)
+                .wrap(Wrap { trim: false }),
             area,
         );
         return;
@@ -78,7 +85,7 @@ pub(super) fn draw_installed_body(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(header, dim),
             Span::styled("  m migrate  M migrate all", dim),
         ])));
-        for ep in external {
+        for ep in &external {
             pkg_to_row.push(items.len());
             let scope = match ep.scope {
                 ScanTarget::HomeManager => Target::HomeManager,

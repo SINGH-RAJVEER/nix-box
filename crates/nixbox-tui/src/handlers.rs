@@ -45,6 +45,14 @@ pub(crate) async fn handle_terminal_event(
         return Ok(());
     }
 
+    if matches!(key.code, KeyCode::Esc)
+        && matches!(app.tab, Tab::Installed)
+        && matches!(app.installed_input_mode, SearchInputMode::Insert)
+    {
+        app.installed_input_mode = SearchInputMode::Normal;
+        return Ok(());
+    }
+
     match key.code {
         KeyCode::Tab => { cycle_tab(app); return Ok(()); }
         KeyCode::BackTab => { cycle_tab_back(app); return Ok(()); }
@@ -87,15 +95,31 @@ pub(crate) async fn handle_terminal_event(
                 _ => {}
             },
         },
-        Tab::Installed => match key.code {
-            KeyCode::Down | KeyCode::Char('j') => move_installed_selection(app, 1),
-            KeyCode::Up | KeyCode::Char('k') => move_installed_selection(app, -1),
-            KeyCode::Char('l') => cycle_tab(app),
-            KeyCode::Char('h') => cycle_tab_back(app),
-            KeyCode::Delete | KeyCode::Char('d') => uninstall_selected(app, tx).await?,
-            KeyCode::Char('m') => migrate_selected(app, tx).await?,
-            KeyCode::Char('M') => migrate_all(app, tx).await?,
-            _ => {}
+        Tab::Installed => match app.installed_input_mode {
+            SearchInputMode::Insert => match key.code {
+                KeyCode::Down => move_installed_selection(app, 1),
+                KeyCode::Up => move_installed_selection(app, -1),
+                _ => {
+                    let before = app.installed_input.value().to_string();
+                    app.installed_input.handle_event(&CtEvent::Key(key));
+                    if app.installed_input.value() != before {
+                        clamp_installed_selection(app);
+                    }
+                }
+            },
+            SearchInputMode::Normal => match key.code {
+                KeyCode::Down | KeyCode::Char('j') => move_installed_selection(app, 1),
+                KeyCode::Up | KeyCode::Char('k') => move_installed_selection(app, -1),
+                KeyCode::Char('l') => cycle_tab(app),
+                KeyCode::Char('h') => cycle_tab_back(app),
+                KeyCode::Delete | KeyCode::Char('d') => uninstall_selected(app, tx).await?,
+                KeyCode::Char('m') => migrate_selected(app, tx).await?,
+                KeyCode::Char('M') => migrate_all(app, tx).await?,
+                KeyCode::Char('i') | KeyCode::Char('a') | KeyCode::Char('/') => {
+                    app.installed_input_mode = SearchInputMode::Insert;
+                }
+                _ => {}
+            },
         },
         Tab::Building | Tab::Queue => match key.code {
             KeyCode::Char('l') => cycle_tab(app),
@@ -104,6 +128,15 @@ pub(crate) async fn handle_terminal_event(
         },
     }
     Ok(())
+}
+
+fn clamp_installed_selection(app: &mut App) {
+    let total = app.installed_total();
+    if total == 0 {
+        app.installed_selected = 0;
+    } else if app.installed_selected >= total {
+        app.installed_selected = total - 1;
+    }
 }
 
 fn handle_channel_edit(app: &mut App, code: KeyCode) {

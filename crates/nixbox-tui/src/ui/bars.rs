@@ -25,14 +25,18 @@ pub(super) fn draw_info_bar(f: &mut Frame, area: Rect, app: &App) {
 pub(super) fn draw_search_bar(f: &mut Frame, area: Rect, app: &App) {
     let t = app.theme();
     let dim = Style::default().add_modifier(Modifier::DIM);
-    let (mode_label, mode_style) = match app.search_input_mode {
+    let (mode, value) = match app.tab {
+        Tab::Installed => (app.installed_input_mode, app.installed_input.value()),
+        _ => (app.search_input_mode, app.input.value()),
+    };
+    let (mode_label, mode_style) = match mode {
         SearchInputMode::Insert => (" INSERT ", t.title_style()),
         SearchInputMode::Normal => (" NORMAL ", dim),
     };
     let line = Line::from(vec![
         Span::styled(mode_label, mode_style),
         Span::styled("  /  ", dim),
-        Span::raw(app.input.value().to_string()),
+        Span::raw(value.to_string()),
     ]);
     f.render_widget(Paragraph::new(line).block(panel(t)), area);
 }
@@ -96,7 +100,10 @@ fn context_keys(app: &App) -> &'static str {
                 SearchInputMode::Insert => "↑↓ nav  ↵ install  ^g target  ^n channel  tab switch  esc normal",
                 SearchInputMode::Normal => "j/k nav  h/l tabs  ↵ install  i insert  ^g target  ^n channel  esc quit",
             },
-            Tab::Installed => "j/k nav  h/l tabs  d uninstall  m migrate  M migrate all  esc quit",
+            Tab::Installed => match app.installed_input_mode {
+                SearchInputMode::Insert => "↑↓ nav  tab switch  esc normal",
+                SearchInputMode::Normal => "j/k nav  h/l tabs  d uninstall  m migrate  M migrate all  i filter  esc quit",
+            },
             Tab::Building => "h/l tabs  esc quit",
             Tab::Queue => "h/l tabs  esc quit",
         },

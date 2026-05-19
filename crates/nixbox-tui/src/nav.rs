@@ -37,8 +37,10 @@ pub(crate) fn cycle_tab_back(app: &mut App) {
 
 pub(crate) fn set_tab(app: &mut App, tab: Tab) {
     app.tab = tab;
-    if matches!(tab, Tab::Search) {
-        app.search_input_mode = SearchInputMode::Normal;
+    match tab {
+        Tab::Search => app.search_input_mode = SearchInputMode::Normal,
+        Tab::Installed => app.installed_input_mode = SearchInputMode::Normal,
+        _ => {}
     }
     app.status = format!("{} tab", tab.label());
 }

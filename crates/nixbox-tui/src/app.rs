@@ -123,6 +123,8 @@ pub(crate) struct App {
     pub(crate) input: Input,
     pub(crate) results: Vec<SearchHit>,
     pub(crate) selected: usize,
+    pub(crate) installed_input: Input,
+    pub(crate) installed_input_mode: SearchInputMode,
     pub(crate) installed_selected: usize,
     pub(crate) status: String,
     pub(crate) mode: Mode,
@@ -168,6 +170,8 @@ impl App {
             input: Input::default(),
             results: Vec::new(),
             selected: 0,
+            installed_input: Input::default(),
+            installed_input_mode: SearchInputMode::Normal,
             installed_selected: 0,
             status,
             mode: Mode::Browsing,
@@ -249,16 +253,43 @@ impl App {
         out
     }
 
+    pub(crate) fn installed_filter(&self) -> Option<String> {
+        let q = self.installed_input.value().trim().to_lowercase();
+        if q.is_empty() { None } else { Some(q) }
+    }
+
+    pub(crate) fn filtered_managed_packages(&self) -> Vec<ManagedPackage> {
+        let filter = self.installed_filter();
+        self.managed_packages()
+            .into_iter()
+            .filter(|p| match &filter {
+                None => true,
+                Some(q) => p.name.to_lowercase().contains(q),
+            })
+            .collect()
+    }
+
+    pub(crate) fn filtered_external_packages(&self) -> Vec<ExternalPackage> {
+        let filter = self.installed_filter();
+        self.external_packages
+            .iter()
+            .filter(|ep| match &filter {
+                None => true,
+                Some(q) => ep.name.to_lowercase().contains(q),
+            })
+            .cloned()
+            .collect()
+    }
+
     pub(crate) fn installed_total(&self) -> usize {
-        self.home_manifest.packages.len()
-            + self.nixos_manifest.packages.len()
-            + self.external_packages.len()
+        self.filtered_managed_packages().len() + self.filtered_external_packages().len()
     }
 
     /// Returns the row currently under the cursor in the Installed tab.
     pub(crate) fn installed_cursor(&self) -> Option<InstalledCursor> {
-        let managed = self.managed_packages();
-        let total = managed.len() + self.external_packages.len();
+        let managed = self.filtered_managed_packages();
+        let external = self.filtered_external_packages();
+        let total = managed.len() + external.len();
         if total == 0 {
             return None;
         }
@@ -267,7 +298,7 @@ impl App {
             Some(InstalledCursor::Managed(managed[idx].clone()))
         } else {
             Some(InstalledCursor::External(
-                self.external_packages[idx - managed.len()].clone(),
+                external[idx - managed.len()].clone(),
             ))
         }
     }

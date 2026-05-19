@@ -33,7 +33,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App) {
         f.render_widget(Block::default().style(Style::default().bg(bg)), f.area());
     }
 
-    let show_search_bar = matches!(app.tab, Tab::Search);
+    let show_search_bar = matches!(app.tab, Tab::Search | Tab::Installed);
 
     let mut constraints = vec![
         Constraint::Length(3),
