@@ -47,6 +47,32 @@ pub fn home_manager_switch_cmd(config_dir: &Path) -> (String, Vec<String>) {
     }
 }
 
+/// Checks whether the flake at `config_dir` exposes a standalone
+/// `homeConfigurations.<user>` output. When false, home-manager packages must
+/// be applied via `nixos-rebuild` because the user wires home-manager in as a
+/// NixOS module rather than as a separate flake output.
+pub async fn flake_has_home_configuration(config_dir: &Path) -> bool {
+    let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
+    let nix = find_in_nix_profiles("nix").unwrap_or_else(|| PathBuf::from("nix"));
+    let expr = format!(
+        "let f = builtins.getFlake \"{}\"; in f ? homeConfigurations && f.homeConfigurations ? \"{}\"",
+        config_dir.display(),
+        user,
+    );
+    let output = Command::new(nix)
+        .args(["eval", "--impure", "--json", "--expr", &expr])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await;
+    match output {
+        Ok(out) if out.status.success() => {
+            std::str::from_utf8(&out.stdout).map(|s| s.trim() == "true").unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
 pub fn nixos_rebuild_switch_cmd(config_dir: &Path) -> (String, Vec<String>) {
     let flake_ref = format!("{}#nixos", config_dir.display());
     (

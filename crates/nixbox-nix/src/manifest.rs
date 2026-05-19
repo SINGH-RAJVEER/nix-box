@@ -139,6 +139,262 @@ fn render_nixos(manifest: &Manifest) -> String {
     )
 }
 
+/// Status of an `ensure_imported` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportStatus {
+    /// The managed file was already imported by the main file.
+    AlreadyImported,
+    /// The managed file was inserted into an existing `imports = [ ... ]` list.
+    InsertedIntoList,
+    /// No `imports` list was present; a new one was prepended.
+    CreatedList,
+    /// The main file does not exist on disk — nothing was modified.
+    MainFileMissing,
+}
+
+/// Ensures `managed_file` is imported by `main_file`. Inserts the import
+/// idempotently. Returns a status describing what (if anything) was done.
+pub fn ensure_imported(main_file: &Path, managed_file: &Path) -> Result<ImportStatus> {
+    if !main_file.exists() {
+        return Ok(ImportStatus::MainFileMissing);
+    }
+    let main_dir = main_file
+        .parent()
+        .with_context(|| format!("{} has no parent", main_file.display()))?;
+    let rel = pathdiff_relative(managed_file, main_dir);
+    let import_str = if rel.starts_with("./") || rel.starts_with("../") || rel.starts_with('/') {
+        rel
+    } else {
+        format!("./{}", rel)
+    };
+
+    let raw = fs::read_to_string(main_file)
+        .with_context(|| format!("reading {}", main_file.display()))?;
+
+    if contains_import(&raw, &import_str) {
+        return Ok(ImportStatus::AlreadyImported);
+    }
+
+    let (new_content, status) = if let Some(updated) = insert_into_imports_list(&raw, &import_str) {
+        (updated, ImportStatus::InsertedIntoList)
+    } else {
+        let updated = create_imports_list(&raw, &import_str)
+            .with_context(|| format!("could not locate body attrset in {}", main_file.display()))?;
+        (updated, ImportStatus::CreatedList)
+    };
+
+    fs::write(main_file, new_content)
+        .with_context(|| format!("writing {}", main_file.display()))?;
+    Ok(status)
+}
+
+/// Best-effort relative path from `base` to `target`. Falls back to the
+/// absolute target when no relative path is possible.
+fn pathdiff_relative(target: &Path, base: &Path) -> String {
+    let target = target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
+    let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+    let target_components: Vec<_> = target.components().collect();
+    let base_components: Vec<_> = base.components().collect();
+    let mut common = 0;
+    while common < target_components.len()
+        && common < base_components.len()
+        && target_components[common] == base_components[common]
+    {
+        common += 1;
+    }
+    let ups = base_components.len() - common;
+    if ups == 0 && common == target_components.len() {
+        return target.to_string_lossy().into_owned();
+    }
+    let mut parts: Vec<String> = std::iter::repeat("..".to_string()).take(ups).collect();
+    for c in &target_components[common..] {
+        parts.push(c.as_os_str().to_string_lossy().into_owned());
+    }
+    parts.join("/")
+}
+
+fn contains_import(raw: &str, import_str: &str) -> bool {
+    // Match the import path as a whole token to avoid prefix collisions
+    // (e.g. `./nixbox-home-packages.nix` vs `./nixbox-home-packages.nix.bak`).
+    for (idx, _) in raw.match_indices(import_str) {
+        let after = raw[idx + import_str.len()..].chars().next();
+        let token_continues = matches!(after, Some(c) if c.is_alphanumeric() || c == '-' || c == '_' || c == '.');
+        if !token_continues {
+            return true;
+        }
+    }
+    false
+}
+
+/// Try to insert `import_str` into an existing `imports = [ ... ]` list.
+/// Returns the updated content, or None when no imports list is found.
+fn insert_into_imports_list(raw: &str, import_str: &str) -> Option<String> {
+    let imports_pos = find_imports_keyword(raw)?;
+    let bracket_rel = raw[imports_pos..].find('[')?;
+    let bracket_pos = imports_pos + bracket_rel;
+    let after_bracket = bracket_pos + 1;
+    let rest = &raw[after_bracket..];
+
+    // Detect multi-line vs single-line list.
+    let multiline = rest
+        .chars()
+        .take_while(|c| c.is_whitespace() && *c != '\n')
+        .count()
+        < rest.len()
+        && rest
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .any(|c| c == '\n');
+
+    let mut out = String::with_capacity(raw.len() + import_str.len() + 8);
+    out.push_str(&raw[..after_bracket]);
+    if multiline {
+        // Find the indentation used by existing entries; fall back to 4 spaces.
+        let indent = detect_list_indent(rest).unwrap_or_else(|| "    ".to_string());
+        out.push('\n');
+        out.push_str(&indent);
+        out.push_str(import_str);
+        out.push_str(&raw[after_bracket..]);
+    } else {
+        out.push(' ');
+        out.push_str(import_str);
+        // If the original char right after `[` isn't whitespace or `]`, add a space.
+        if let Some(next) = rest.chars().next() {
+            if !next.is_whitespace() && next != ']' {
+                out.push(' ');
+            }
+        }
+        out.push_str(&raw[after_bracket..]);
+    }
+    Some(out)
+}
+
+fn detect_list_indent(after_bracket: &str) -> Option<String> {
+    for line in after_bracket.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+        if !indent.is_empty() {
+            return Some(indent);
+        }
+        return None;
+    }
+    None
+}
+
+/// Locate the `imports` identifier as a key in an attrset (not inside a string
+/// or comment). Naive scan that skips line comments and string literals.
+fn find_imports_keyword(raw: &str) -> Option<usize> {
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    let mut in_string = false;
+    let mut in_line_comment = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_line_comment {
+            if b == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_string {
+            if b == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if b == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'#' {
+            in_line_comment = true;
+            i += 1;
+            continue;
+        }
+        if b == b'"' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+        if b == b'i' && raw[i..].starts_with("imports") {
+            let prev_ok = i == 0
+                || !matches!(
+                    bytes[i - 1],
+                    b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-'
+                );
+            let after = i + "imports".len();
+            let next_ok = after >= bytes.len()
+                || !matches!(
+                    bytes[after],
+                    b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-'
+                );
+            if prev_ok && next_ok {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Insert a new `imports = [ <path> ];` line at the top of the outer attrset
+/// body. The outer body is identified as the first `{` that appears on its
+/// own after the function-argument header (`{ ... }:`).
+fn create_imports_list(raw: &str, import_str: &str) -> Option<String> {
+    // Find a `{` that begins the body. Heuristic: the first `{` that comes
+    // after a `:` outside of strings/comments. This skips the args attrset.
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    let mut in_string = false;
+    let mut in_line_comment = false;
+    let mut seen_colon = false;
+    let mut depth: i32 = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_line_comment {
+            if b == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_string {
+            if b == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if b == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'#' => in_line_comment = true,
+            b'"' => in_string = true,
+            b'{' => {
+                if seen_colon && depth == 0 {
+                    let mut out = String::with_capacity(raw.len() + import_str.len() + 16);
+                    out.push_str(&raw[..=i]);
+                    out.push_str(&format!("\n  imports = [ {} ];\n", import_str));
+                    out.push_str(&raw[i + 1..]);
+                    return Some(out);
+                }
+                depth += 1;
+            }
+            b'}' => depth -= 1,
+            b':' if depth == 0 => seen_colon = true,
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,5 +416,55 @@ mod tests {
         let rendered = render_nixos(&m);
         let parsed = parse(&rendered);
         assert_eq!(parsed.packages, m.packages);
+    }
+
+    #[test]
+    fn inserts_into_multiline_imports() {
+        let raw = "{ pkgs, ... }:\n{\n    imports = [\n        ./a.nix\n        ./b.nix\n    ];\n}\n";
+        let out = insert_into_imports_list(raw, "./nixbox-home-packages.nix").unwrap();
+        assert!(out.contains("./nixbox-home-packages.nix\n        ./a.nix"));
+    }
+
+    #[test]
+    fn inserts_into_singleline_imports() {
+        let raw = "{ pkgs, ... }:\n{ imports = [ ./a.nix ]; }\n";
+        let out = insert_into_imports_list(raw, "./mgr.nix").unwrap();
+        assert!(out.contains("imports = [ ./mgr.nix ./a.nix ];"));
+    }
+
+    #[test]
+    fn inserts_into_empty_imports() {
+        let raw = "{ pkgs, ... }:\n{ imports = []; }\n";
+        let out = insert_into_imports_list(raw, "./mgr.nix").unwrap();
+        assert!(out.contains("imports = [ ./mgr.nix];"));
+    }
+
+    #[test]
+    fn detects_existing_import_idempotent() {
+        let raw = "{ pkgs, ... }:\n{ imports = [ ./nixbox-home-packages.nix ]; }\n";
+        assert!(contains_import(raw, "./nixbox-home-packages.nix"));
+    }
+
+    #[test]
+    fn does_not_match_substring_prefix() {
+        let raw = "{ pkgs, ... }:\n{ imports = [ ./nixbox-home-packages.nix.bak ]; }\n";
+        assert!(!contains_import(raw, "./nixbox-home-packages.nix"));
+    }
+
+    #[test]
+    fn creates_imports_list_when_missing() {
+        let raw = "{ pkgs, ... }:\n{\n  home.packages = [ pkgs.htop ];\n}\n";
+        let out = create_imports_list(raw, "./mgr.nix").unwrap();
+        assert!(out.contains("imports = [ ./mgr.nix ];"));
+        // Ensure original content still present.
+        assert!(out.contains("home.packages"));
+    }
+
+    #[test]
+    fn ignores_imports_word_inside_string() {
+        let raw = "{ pkgs, ... }:\n{ x = \"imports\"; imports = [ ./a.nix ]; }\n";
+        let pos = find_imports_keyword(raw).unwrap();
+        // Should find the second occurrence (the real key), not the one in the string.
+        assert!(raw[pos..].starts_with("imports = ["));
     }
 }

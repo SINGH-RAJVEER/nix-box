@@ -3,8 +3,11 @@ use std::time::Duration;
 use anyhow::Result;
 use nixbox_config::Target;
 use nixbox_nix::{
-    build::{home_manager_switch_cmd, nixos_rebuild_switch_cmd, rebuild, BuildEvent},
-    manifest::ManagedFile,
+    build::{
+        flake_has_home_configuration, home_manager_switch_cmd, nixos_rebuild_switch_cmd, rebuild,
+        BuildEvent,
+    },
+    manifest::{ensure_imported, ImportStatus, ManagedFile},
     scan::{remove_from_source, ScanTarget},
 };
 use tokio::sync::mpsc;
@@ -26,6 +29,76 @@ pub(crate) fn write_manifest(app: &App, scope: Target) -> Result<ManagedFile> {
         Target::NixosSystem => managed.write_nixos(app.manifest_for(scope))?,
     }
     Ok(managed)
+}
+
+/// Runs `git add -- <path>` if `path` lives inside a git work tree.
+/// Silent no-op when git isn't installed or the path isn't tracked-eligible.
+/// Nix flakes refuse to evaluate files that are present on disk but untracked,
+/// so this keeps newly-written managed files visible to the rebuild.
+fn git_track(path: &std::path::Path) -> Option<String> {
+    let parent = path.parent()?;
+    let inside = std::process::Command::new("git")
+        .arg("-C")
+        .arg(parent)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !inside.status.success()
+        || std::str::from_utf8(&inside.stdout).map(|s| s.trim()) != Ok("true")
+    {
+        return None;
+    }
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(parent)
+        .args(["add", "--intent-to-add", "--"])
+        .arg(path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .ok()?;
+    if out.status.success() {
+        Some(format!("git add -N {}", path.display()))
+    } else {
+        Some(format!(
+            "Warning: `git add` failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+/// Notes describing any change that should be surfaced to the user.
+fn ensure_imported_note(
+    main_file: &std::path::Path,
+    managed: &ManagedFile,
+) -> Option<String> {
+    match ensure_imported(main_file, managed.path()) {
+        Ok(ImportStatus::AlreadyImported) => None,
+        Ok(ImportStatus::InsertedIntoList) => Some(format!(
+            "Added import of {} to {}.",
+            managed.path().display(),
+            main_file.display(),
+        )),
+        Ok(ImportStatus::CreatedList) => Some(format!(
+            "Created imports list in {} and added {}.",
+            main_file.display(),
+            managed.path().display(),
+        )),
+        Ok(ImportStatus::MainFileMissing) => Some(format!(
+            "Warning: {} not found; you must import {} manually.",
+            main_file.display(),
+            managed.path().display(),
+        )),
+        Err(e) => Some(format!(
+            "Warning: could not auto-import {} into {}: {}",
+            managed.path().display(),
+            main_file.display(),
+            e,
+        )),
+    }
 }
 
 pub(crate) fn spawn_rebuild(
@@ -55,7 +128,20 @@ pub(crate) fn spawn_rebuild(
         let args_owned;
         let (cmd, args): (&str, Vec<&str>) = match scope {
             Target::HomeManager => {
-                let (c, a) = home_manager_switch_cmd(&config_dir);
+                // If the flake doesn't expose a standalone `homeConfigurations.<user>`
+                // output, the user wires home-manager in as a NixOS module — apply
+                // the change via `nixos-rebuild` instead.
+                let (c, a) = if flake_has_home_configuration(&config_dir).await {
+                    home_manager_switch_cmd(&config_dir)
+                } else {
+                    let _ = app_tx
+                        .send(AppEvent::Build(BuildEvent::Line(
+                            "No standalone homeConfigurations found; applying via nixos-rebuild."
+                                .into(),
+                        )))
+                        .await;
+                    nixos_rebuild_switch_cmd(&config_dir)
+                };
                 cmd_owned = c;
                 args_owned = a;
                 (cmd_owned.as_str(), args_owned.iter().map(|s| s.as_str()).collect())
@@ -123,6 +209,20 @@ fn apply_op_to_manifest(app: &mut App, op: &QueuedOp) -> Result<()> {
         scope.label(),
         op.label(),
     ));
+    let main_file = app.config.main_file_for(scope);
+    if let Some(note) = ensure_imported_note(&main_file, &managed) {
+        app.log.push(note);
+    }
+    // Flakes ignore untracked files — make sure git sees the managed file
+    // (and the main config if we just touched it).
+    if let Some(note) = git_track(managed.path()) {
+        app.log.push(note);
+    }
+    if main_file.exists() {
+        if let Some(note) = git_track(&main_file) {
+            app.log.push(note);
+        }
+    }
     let total = app.installed_total();
     if total == 0 {
         app.installed_selected = 0;
