@@ -16,6 +16,7 @@ fn find_in_nix_profiles(name: &str) -> Option<PathBuf> {
     let home = std::env::var("HOME").unwrap_or_default();
     let user = std::env::var("USER").unwrap_or_default();
     let candidates = [
+        format!("/run/wrappers/bin/{name}"),
         format!("{home}/.nix-profile/bin/{name}"),
         format!("/etc/profiles/per-user/{user}/bin/{name}"),
         format!("/run/current-system/sw/bin/{name}"),

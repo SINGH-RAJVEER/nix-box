@@ -35,7 +35,6 @@ pub(crate) fn spawn_rebuild(
     action_label: String,
 ) {
     app.build_in_progress = true;
-    app.build_progress = None;
     app.current_op_label = Some(action_label.clone());
     app.log.clear();
     app.status = format!("{}...", action_label);
