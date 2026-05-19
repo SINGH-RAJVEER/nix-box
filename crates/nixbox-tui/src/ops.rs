@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 
 use crate::app::{App, AppEvent, InstalledCursor, QueuedOp, Tab};
+use crate::state::InProgress;
 
 fn scope_to_scan_target(scope: Target) -> ScanTarget {
     match scope {
@@ -109,8 +110,13 @@ pub(crate) fn spawn_rebuild(
 ) {
     app.build_in_progress = true;
     app.current_op_label = Some(action_label.clone());
+    app.in_progress_op = Some(InProgress {
+        scope,
+        label: action_label.clone(),
+    });
     app.log.clear();
     app.status = format!("{}...", action_label);
+    app.persist();
 
     let config_dir = app.config.home_manager_dir();
     let app_tx = tx.clone();
@@ -167,11 +173,15 @@ pub(crate) fn drain_queue(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
     if app.build_in_progress {
         return;
     }
-    let Some(op) = app.queue.pop_front() else { return };
+    let Some(op) = app.queue.pop_front() else {
+        app.persist();
+        return;
+    };
     let label = op.label();
     let scope = op.scope();
     if let Err(e) = apply_op_to_manifest(app, &op) {
         app.status = format!("{}: failed to write manifest: {}", label, e);
+        app.persist();
         drain_queue(app, tx);
         return;
     }
@@ -258,6 +268,7 @@ pub(crate) async fn install_selected(app: &mut App, tx: &mpsc::Sender<AppEvent>)
 
     let attr = hit.attr.clone();
     app.queue.push_back(QueuedOp::Install { hit, scope });
+    app.persist();
     if app.build_in_progress {
         app.status = format!("Queued install: {}.", attr);
         app.tab = Tab::Queue;
@@ -304,6 +315,7 @@ pub(crate) async fn uninstall_selected(
         name: name.clone(),
         scope,
     });
+    app.persist();
     if app.build_in_progress {
         app.status = format!("Queued remove: {} [{}].", name, scope.tag());
         app.tab = Tab::Queue;
@@ -352,6 +364,7 @@ pub(crate) async fn migrate_selected(app: &mut App, tx: &mpsc::Sender<AppEvent>)
         names: vec![name.clone()],
         scope,
     });
+    app.persist();
     if app.build_in_progress {
         app.status = format!("Queued migrate: {} [{}].", name, scope.tag());
         app.tab = Tab::Queue;
@@ -392,6 +405,7 @@ pub(crate) async fn migrate_all(app: &mut App, tx: &mpsc::Sender<AppEvent>) -> R
             scope: Target::NixosSystem,
         });
     }
+    app.persist();
     let summary = format!(
         "Queued migrate-all ({} hm, {} nixos).",
         hm_count, nx_count,

@@ -219,13 +219,21 @@ pub(crate) fn handle_app_event(app: &mut App, tx: &mpsc::Sender<AppEvent>, ev: A
         AppEvent::Build(BuildEvent::Finished(result)) => {
             let label = app.current_op_label.take().unwrap_or_else(|| "build".into());
             app.build_in_progress = false;
-            app.status = match &result {
-                Ok(()) => format!("{} done.", label),
-                Err(err) => format!("{} failed: {}.", label, err),
-            };
+            app.in_progress_op = None;
+            match &result {
+                Ok(()) => {
+                    app.status = format!("{} done.", label);
+                    app.last_error = None;
+                }
+                Err(err) => {
+                    app.status = format!("{} failed: {}.", label, err);
+                    app.last_error = Some(format!("{}: {}", label, err));
+                }
+            }
             if result.is_ok() {
                 app.refresh_external_packages();
             }
+            app.persist();
             drain_queue(app, tx);
             if !app.visible_tabs().contains(&app.tab) {
                 app.tab = Tab::Search;

@@ -22,7 +22,10 @@ use ratatui::Terminal;
 use tokio::sync::mpsc;
 use tui_input::Input;
 
+use serde::{Deserialize, Serialize};
+
 use crate::handlers::{handle_app_event, handle_terminal_event};
+use crate::state::{self, InProgress, PersistedState};
 use crate::theme;
 use crate::ui;
 
@@ -35,7 +38,7 @@ pub(crate) enum Mode {
     ChannelEdit,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum QueuedOp {
     Install { hit: SearchHit, scope: Target },
     Uninstall { name: String, scope: Target },
@@ -141,6 +144,13 @@ pub(crate) struct App {
     pub(crate) spinner_frame: usize,
     pub(crate) queue: VecDeque<QueuedOp>,
     pub(crate) current_op_label: Option<String>,
+    /// Set while a rebuild is in flight; mirrors what gets persisted so the
+    /// next launch can detect an interrupted operation. Cleared when the
+    /// rebuild finishes (success or failure).
+    pub(crate) in_progress_op: Option<InProgress>,
+    /// Error message from the previous run that was never acknowledged.
+    /// Survives across launches until the next successful build clears it.
+    pub(crate) last_error: Option<String>,
     pub(crate) channel_cursor: usize,
 }
 
@@ -188,6 +198,8 @@ impl App {
             spinner_frame: 0,
             queue: VecDeque::new(),
             current_op_label: None,
+            in_progress_op: None,
+            last_error: None,
             channel_cursor: 0,
         }
     }
@@ -303,6 +315,18 @@ impl App {
         }
     }
 
+    /// Writes the current persistable slice of state to disk so the next
+    /// launch can recover from a crash, kill, or interrupted rebuild. Errors
+    /// are swallowed because failing to persist must never break the TUI.
+    pub(crate) fn persist(&self) {
+        let snapshot = PersistedState {
+            pending_queue: self.queue.iter().cloned().collect(),
+            in_progress: self.in_progress_op.clone(),
+            last_error: self.last_error.clone(),
+        };
+        let _ = snapshot.save();
+    }
+
     /// Re-reads both main config files and refreshes `external_packages`,
     /// excluding anything already tracked in either manifest.
     pub(crate) fn refresh_external_packages(&mut self) {
@@ -392,6 +416,7 @@ async fn event_loop(
 ) -> Result<()> {
     let mut app = App::new(config, home_manifest, nixos_manifest, externals);
     let (tx, mut rx) = mpsc::channel::<AppEvent>(128);
+    state::restore(&mut app, &tx);
     let mut term_events = EventStream::new();
     let mut spinner_tick = tokio::time::interval(Duration::from_millis(80));
     spinner_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

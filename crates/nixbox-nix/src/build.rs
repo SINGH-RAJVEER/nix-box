@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
@@ -31,7 +31,10 @@ pub fn home_manager_switch_cmd(config_dir: &Path) -> (String, Vec<String>) {
     let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
     let flake_ref = format!("{}#{}", config_dir.display(), user);
     if let Some(bin) = find_in_nix_profiles("home-manager") {
-        (bin.to_string_lossy().into_owned(), vec!["switch".into(), "--flake".into(), flake_ref])
+        (
+            bin.to_string_lossy().into_owned(),
+            vec!["switch".into(), "--flake".into(), flake_ref],
+        )
     } else {
         (
             "nix".into(),
@@ -77,7 +80,12 @@ pub fn nixos_rebuild_switch_cmd(config_dir: &Path) -> (String, Vec<String>) {
     let flake_ref = format!("{}#nixos", config_dir.display());
     (
         "sudo".into(),
-        vec!["nixos-rebuild".into(), "switch".into(), "--flake".into(), flake_ref],
+        vec![
+            "nixos-rebuild".into(),
+            "switch".into(),
+            "--flake".into(),
+            flake_ref,
+        ],
     )
 }
 
@@ -98,18 +106,8 @@ pub async fn rebuild(command: &str, args: &[&str], tx: mpsc::Sender<BuildEvent>)
     let stdout_tx = tx.clone();
     let stderr_tx = tx.clone();
 
-    let stdout_task = tokio::spawn(async move {
-        let mut reader = BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            let _ = stdout_tx.send(BuildEvent::Line(line)).await;
-        }
-    });
-    let stderr_task = tokio::spawn(async move {
-        let mut reader = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            let _ = stderr_tx.send(BuildEvent::Line(line)).await;
-        }
-    });
+    let stdout_task = tokio::spawn(forward_output(stdout, stdout_tx));
+    let stderr_task = tokio::spawn(forward_output(stderr, stderr_tx));
 
     let status = child.wait().await?;
     let _ = stdout_task.await;
@@ -126,4 +124,53 @@ pub async fn rebuild(command: &str, args: &[&str], tx: mpsc::Sender<BuildEvent>)
     };
     let _ = tx.send(BuildEvent::Finished(result)).await;
     Ok(())
+}
+
+async fn forward_output<R>(stream: R, tx: mpsc::Sender<BuildEvent>)
+where
+    R: AsyncRead + Unpin,
+{
+    let mut reader = BufReader::new(stream).lines();
+    while let Ok(Some(line)) = reader.next_line().await {
+        let text = line.trim_end().to_string();
+        if text.is_empty() {
+            continue;
+        }
+        if tx.send(BuildEvent::Line(text)).await.is_err() {
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BuildEvent, forward_output, nixos_rebuild_switch_cmd};
+    use tokio::io::{AsyncWriteExt, duplex};
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn forwards_newline_delimited_lines() {
+        let (mut writer, reader) = duplex(128);
+        let (tx, mut rx) = mpsc::channel(8);
+        let task = tokio::spawn(forward_output(reader, tx));
+
+        writer.write_all(b"first line\nsecond line\n").await.unwrap();
+        drop(writer);
+        task.await.unwrap();
+
+        assert!(matches!(rx.recv().await, Some(BuildEvent::Line(line)) if line == "first line"));
+        assert!(matches!(rx.recv().await, Some(BuildEvent::Line(line)) if line == "second line"));
+        assert!(rx.recv().await.is_none());
+    }
+
+    #[test]
+    fn nixos_rebuild_uses_sudo_with_flake_ref() {
+        let (cmd, args) = nixos_rebuild_switch_cmd(std::path::Path::new("/tmp/nixbox-config"));
+
+        assert_eq!(cmd, "sudo");
+        assert_eq!(args[0], "nixos-rebuild");
+        assert_eq!(args[1], "switch");
+        assert_eq!(args[2], "--flake");
+        assert_eq!(args[3], "/tmp/nixbox-config#nixos");
+    }
 }
