@@ -37,6 +37,8 @@
             packages = [
               rustToolchain
               pkgs.nix
+              pkgs.nixd
+              pkgs.nil
             ];
 
             RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
