@@ -206,7 +206,7 @@ fn pathdiff_relative(target: &Path, base: &Path) -> String {
     if ups == 0 && common == target_components.len() {
         return target.to_string_lossy().into_owned();
     }
-    let mut parts: Vec<String> = std::iter::repeat("..".to_string()).take(ups).collect();
+    let mut parts: Vec<String> = std::iter::repeat_n("..".to_string(), ups).collect();
     for c in &target_components[common..] {
         parts.push(c.as_os_str().to_string_lossy().into_owned());
     }
@@ -259,10 +259,11 @@ fn insert_into_imports_list(raw: &str, import_str: &str) -> Option<String> {
         out.push(' ');
         out.push_str(import_str);
         // If the original char right after `[` isn't whitespace or `]`, add a space.
-        if let Some(next) = rest.chars().next() {
-            if !next.is_whitespace() && next != ']' {
-                out.push(' ');
-            }
+        if let Some(next) = rest.chars().next()
+            && !next.is_whitespace()
+            && next != ']'
+        {
+            out.push(' ');
         }
         out.push_str(&raw[after_bracket..]);
     }

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use crossterm::event::{Event as CtEvent, KeyCode, KeyEventKind, KeyModifiers};
 use nixbox_nix::build::BuildEvent;
+use nixbox_nix::search::MAX_SEARCH_RESULTS;
 use tokio::sync::mpsc;
 use tui_input::backend::crossterm::EventHandler;
 
@@ -196,15 +197,24 @@ pub(crate) fn handle_app_event(app: &mut App, tx: &mpsc::Sender<AppEvent>, ev: A
         AppEvent::SearchDone { epoch, hits } => {
             if epoch == app.search_epoch {
                 app.searching = false;
+                app.search_task = None;
                 let count = hits.len();
                 app.results = hits;
                 app.selected = 0;
-                app.status = format!("{} matches for `{}`", count, app.latest_query);
+                app.status = if count == MAX_SEARCH_RESULTS {
+                    format!(
+                        "Showing first {} matches for `{}`; refine search for more.",
+                        count, app.latest_query
+                    )
+                } else {
+                    format!("{} matches for `{}`", count, app.latest_query)
+                };
             }
         }
         AppEvent::SearchFailed { epoch, error } => {
             if epoch == app.search_epoch {
                 app.searching = false;
+                app.search_task = None;
                 app.results.clear();
                 app.status = format!("search failed: {}", error);
             }
@@ -241,4 +251,3 @@ pub(crate) fn handle_app_event(app: &mut App, tx: &mpsc::Sender<AppEvent>, ev: A
         }
     }
 }
-

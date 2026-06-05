@@ -20,6 +20,7 @@ use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tui_input::Input;
 
 use serde::{Deserialize, Serialize};
@@ -140,6 +141,7 @@ pub(crate) struct App {
     pub(crate) theme_cursor: usize,
     pub(crate) search_input_mode: SearchInputMode,
     pub(crate) searching: bool,
+    pub(crate) search_task: Option<JoinHandle<()>>,
     pub(crate) build_in_progress: bool,
     pub(crate) spinner_frame: usize,
     pub(crate) queue: VecDeque<QueuedOp>,
@@ -194,6 +196,7 @@ impl App {
             theme_cursor: theme_index,
             search_input_mode: SearchInputMode::Normal,
             searching: false,
+            search_task: None,
             build_in_progress: false,
             spinner_frame: 0,
             queue: VecDeque::new(),
@@ -438,6 +441,9 @@ async fn event_loop(
                 app.spinner_frame = app.spinner_frame.wrapping_add(1);
             }
         }
+    }
+    if let Some(handle) = app.search_task.take() {
+        handle.abort();
     }
     Ok(())
 }

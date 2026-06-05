@@ -228,10 +228,10 @@ fn apply_op_to_manifest(app: &mut App, op: &QueuedOp) -> Result<()> {
     if let Some(note) = git_track(managed.path()) {
         app.log.push(note);
     }
-    if main_file.exists() {
-        if let Some(note) = git_track(&main_file) {
-            app.log.push(note);
-        }
+    if main_file.exists()
+        && let Some(note) = git_track(&main_file)
+    {
+        app.log.push(note);
     }
     let total = app.installed_total();
     if total == 0 {
@@ -422,6 +422,10 @@ pub(crate) async fn migrate_all(app: &mut App, tx: &mpsc::Sender<AppEvent>) -> R
 }
 
 pub(crate) fn schedule_search(app: &mut App, tx: mpsc::Sender<AppEvent>) {
+    if let Some(handle) = app.search_task.take() {
+        handle.abort();
+    }
+
     let query = app.input.value().to_string();
     if query.is_empty() {
         app.search_epoch += 1;
@@ -438,7 +442,7 @@ pub(crate) fn schedule_search(app: &mut App, tx: mpsc::Sender<AppEvent>) {
     let channel = app.config.channel.clone();
     app.latest_query = query.clone();
 
-    tokio::spawn(async move {
+    app.search_task = Some(tokio::spawn(async move {
         sleep(Duration::from_millis(180)).await;
         match nixbox_nix::search::search(&channel, &query).await {
             Ok(hits) => {
@@ -453,5 +457,5 @@ pub(crate) fn schedule_search(app: &mut App, tx: mpsc::Sender<AppEvent>) {
                     .await;
             }
         }
-    });
+    }));
 }

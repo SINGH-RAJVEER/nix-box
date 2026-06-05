@@ -86,16 +86,17 @@ fn parse(raw: &str, target: ScanTarget) -> Vec<ExternalPackage> {
             // Only treat lines at the outermost depth, with no bracket change,
             // as candidate package entries. Lines that open/close nested
             // structures are skipped.
-            if depth == outer_depth && delta == 0 {
-                if let Some(name) = extract_entry(content, open.with_pkgs) {
-                    out.push(ExternalPackage {
-                        name,
-                        source_attr: open.source_attr.clone(),
-                        line: j,
-                        migratable: true,
-                        scope: target,
-                    });
-                }
+            if depth == outer_depth
+                && delta == 0
+                && let Some(name) = extract_entry(content, open.with_pkgs)
+            {
+                out.push(ExternalPackage {
+                    name,
+                    source_attr: open.source_attr.clone(),
+                    line: j,
+                    migratable: true,
+                    scope: target,
+                });
             }
             depth += delta;
             j += 1;
