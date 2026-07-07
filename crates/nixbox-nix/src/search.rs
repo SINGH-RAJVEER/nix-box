@@ -168,6 +168,40 @@ fn short_attr(full: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn resolves_known_channel_aliases() {
+        assert_eq!(
+            resolve_channel("nixpkgs-unstable"),
+            "github:NixOS/nixpkgs/nixos-unstable"
+        );
+        assert_eq!(resolve_channel("nixpkgs"), "nixpkgs");
+        assert_eq!(resolve_channel("github:owner/repo"), "github:owner/repo");
+    }
+
+    #[test]
+    fn short_attr_keeps_final_attr_segment() {
+        assert_eq!(short_attr("legacyPackages.x86_64-linux.ripgrep"), "ripgrep");
+        assert_eq!(short_attr("firefox"), "firefox");
+        assert_eq!(short_attr("pkgs.python312Packages.black"), "black");
+    }
+
+    #[tokio::test]
+    async fn read_limited_allows_exact_limit() {
+        let bytes = b"abcdef".to_vec();
+        let out = read_limited(Cursor::new(bytes), 6).await.expect("read");
+        assert_eq!(out, b"abcdef".to_vec());
+    }
+
+    #[tokio::test]
+    async fn read_limited_rejects_payload_over_limit() {
+        let bytes = b"abcdef".to_vec();
+        let err = read_limited(Cursor::new(bytes), 5)
+            .await
+            .expect_err("payload should exceed limit");
+        assert!(err.to_string().contains("exceeded"));
+    }
 
     #[test]
     fn parse_hits_shortens_attrs_and_caps_results() {

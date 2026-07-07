@@ -22,7 +22,10 @@ fn find_in_nix_profiles(name: &str) -> Option<PathBuf> {
         format!("/run/current-system/sw/bin/{name}"),
         format!("/nix/var/nix/profiles/default/bin/{name}"),
     ];
-    candidates.into_iter().map(PathBuf::from).find(|p| p.exists())
+    candidates
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|p| p.exists())
 }
 
 /// Returns (command, args) for `home-manager switch --flake <config_dir>#<user>`.
@@ -69,9 +72,9 @@ pub async fn flake_has_home_configuration(config_dir: &Path) -> bool {
         .output()
         .await;
     match output {
-        Ok(out) if out.status.success() => {
-            std::str::from_utf8(&out.stdout).map(|s| s.trim() == "true").unwrap_or(false)
-        }
+        Ok(out) if out.status.success() => std::str::from_utf8(&out.stdout)
+            .map(|s| s.trim() == "true")
+            .unwrap_or(false),
         _ => false,
     }
 }
@@ -90,8 +93,7 @@ pub fn nixos_rebuild_switch_cmd(config_dir: &Path) -> (String, Vec<String>) {
 }
 
 pub async fn rebuild(command: &str, args: &[&str], tx: mpsc::Sender<BuildEvent>) -> Result<()> {
-    let resolved = find_in_nix_profiles(command)
-        .unwrap_or_else(|| PathBuf::from(command));
+    let resolved = find_in_nix_profiles(command).unwrap_or_else(|| PathBuf::from(command));
 
     let mut child = Command::new(&resolved)
         .args(args)
@@ -119,7 +121,10 @@ pub async fn rebuild(command: &str, args: &[&str], tx: mpsc::Sender<BuildEvent>)
         Err(format!(
             "{} exited with status {}",
             command,
-            status.code().map(|c| c.to_string()).unwrap_or_else(|| "<signal>".into())
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "<signal>".into())
         ))
     };
     let _ = tx.send(BuildEvent::Finished(result)).await;
@@ -151,7 +156,10 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let task = tokio::spawn(forward_output(reader, tx));
 
-        writer.write_all(b"first line\nsecond line\n").await.unwrap();
+        writer
+            .write_all(b"first line\nsecond line\n")
+            .await
+            .unwrap();
         drop(writer);
         task.await.unwrap();
 

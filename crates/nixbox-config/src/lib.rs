@@ -113,19 +113,16 @@ impl Config {
                 .home_manager_main_file
                 .clone()
                 .unwrap_or_else(|| nixos_config_dir().join("home.nix")),
-            Target::NixosSystem => self
-                .nixos_main_file
-                .clone()
-                .unwrap_or_else(|| {
-                    // Prefer the user-local config dir (common with flake setups),
-                    // fall back to the traditional system path otherwise.
-                    let local = nixos_config_dir().join("configuration.nix");
-                    if local.exists() {
-                        local
-                    } else {
-                        PathBuf::from("/etc/nixos/configuration.nix")
-                    }
-                }),
+            Target::NixosSystem => self.nixos_main_file.clone().unwrap_or_else(|| {
+                // Prefer the user-local config dir (common with flake setups),
+                // fall back to the traditional system path otherwise.
+                let local = nixos_config_dir().join("configuration.nix");
+                if local.exists() {
+                    local
+                } else {
+                    PathBuf::from("/etc/nixos/configuration.nix")
+                }
+            }),
         }
     }
 
@@ -134,22 +131,20 @@ impl Config {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let raw = fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let cfg: Config = serde_json::from_str(&raw)
-            .with_context(|| format!("parsing {}", path.display()))?;
+        let raw =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let cfg: Config =
+            serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
         Ok(cfg)
     }
 
     pub fn save(&self) -> Result<()> {
         let path = settings_path()?;
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
         let raw = serde_json::to_string_pretty(self)?;
-        fs::write(&path, raw)
-            .with_context(|| format!("writing {}", path.display()))?;
+        fs::write(&path, raw).with_context(|| format!("writing {}", path.display()))?;
         Ok(())
     }
 }
@@ -167,5 +162,88 @@ fn nixos_config_dir() -> PathBuf {
         base.config_dir().join("nixos")
     } else {
         PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/nixos")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_is_nixos_on_nixpkgs_with_default_theme() {
+        let cfg = Config::default();
+        assert_eq!(cfg.channel, "nixpkgs");
+        assert_eq!(cfg.target, Target::NixosSystem);
+        assert_eq!(cfg.theme, "default");
+        assert!(cfg.recent_searches.is_empty());
+        assert!(cfg.home_manager_main_file.is_none());
+        assert!(cfg.nixos_main_file.is_none());
+    }
+
+    #[test]
+    fn target_labels_and_tags_are_stable() {
+        assert_eq!(Target::HomeManager.label(), "home-manager");
+        assert_eq!(Target::HomeManager.tag(), "hm");
+        assert_eq!(Target::NixosSystem.label(), "nixos");
+        assert_eq!(Target::NixosSystem.tag(), "nixos");
+    }
+
+    #[test]
+    fn push_recent_trims_deduplicates_and_moves_to_front() {
+        let mut cfg = Config::default();
+        cfg.push_recent(" ripgrep ".into());
+        cfg.push_recent("fd".into());
+        cfg.push_recent("ripgrep".into());
+        cfg.push_recent("   ".into());
+
+        assert_eq!(cfg.recent_searches, vec!["ripgrep", "fd"]);
+    }
+
+    #[test]
+    fn push_recent_caps_history() {
+        let mut cfg = Config::default();
+        for i in 0..25 {
+            cfg.push_recent(format!("pkg-{i}"));
+        }
+
+        assert_eq!(cfg.recent_searches.len(), 20);
+        assert_eq!(cfg.recent_searches.first().unwrap(), "pkg-24");
+        assert_eq!(cfg.recent_searches.last().unwrap(), "pkg-5");
+    }
+
+    #[test]
+    fn config_deserialization_applies_defaults_for_new_fields() {
+        let cfg: Config = serde_json::from_str(
+            r#"{
+                "channel": "nixpkgs-unstable",
+                "target": "home-manager"
+            }"#,
+        )
+        .expect("deserialize config");
+
+        assert_eq!(cfg.channel, "nixpkgs-unstable");
+        assert_eq!(cfg.target, Target::HomeManager);
+        assert_eq!(cfg.theme, "default");
+        assert!(cfg.recent_searches.is_empty());
+        assert!(cfg.home_manager_main_file.is_none());
+        assert!(cfg.nixos_main_file.is_none());
+    }
+
+    #[test]
+    fn explicit_main_file_overrides_are_respected() {
+        let cfg = Config {
+            home_manager_main_file: Some(PathBuf::from("/tmp/home.nix")),
+            nixos_main_file: Some(PathBuf::from("/tmp/configuration.nix")),
+            ..Config::default()
+        };
+
+        assert_eq!(
+            cfg.main_file_for(Target::HomeManager),
+            PathBuf::from("/tmp/home.nix")
+        );
+        assert_eq!(
+            cfg.main_file_for(Target::NixosSystem),
+            PathBuf::from("/tmp/configuration.nix")
+        );
     }
 }

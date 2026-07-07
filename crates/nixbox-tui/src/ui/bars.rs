@@ -1,26 +1,11 @@
-use ratatui::layout::Rect;
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
-use ratatui::Frame;
 
+use super::{SPINNER, panel};
 use crate::app::{App, Mode, SearchInputMode, Tab};
-use super::{panel, SPINNER};
-
-pub(super) fn draw_info_bar(f: &mut Frame, area: Rect, app: &App) {
-    let t = app.theme();
-    let dim = Style::default().add_modifier(Modifier::DIM);
-    let line = Line::from(vec![
-        Span::styled("channel", dim),
-        Span::raw("  "),
-        Span::styled(app.channel().to_string(), t.name_style()),
-        Span::styled("     │     ", dim),
-        Span::styled("target", dim),
-        Span::raw("  "),
-        Span::styled(app.target_label().to_string(), t.name_style()),
-    ]);
-    f.render_widget(Paragraph::new(line).block(panel(t)), area);
-}
 
 pub(super) fn draw_search_bar(f: &mut Frame, area: Rect, app: &App) {
     let t = app.theme();
@@ -46,6 +31,12 @@ pub(super) fn draw_tab_strip(f: &mut Frame, area: Rect, app: &App) {
     let dim = Style::default().add_modifier(Modifier::DIM);
     let tabs = app.visible_tabs();
 
+    let context_width = context_pills_width(app).min(area.width as usize) as u16;
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(10), Constraint::Length(context_width)])
+        .split(area);
+
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
     for tab in tabs.iter() {
         let is_active = *tab == app.tab;
@@ -64,7 +55,21 @@ pub(super) fn draw_tab_strip(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::raw("  "));
     }
 
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
+    let context = Line::from(vec![
+        Span::styled("channel ", dim),
+        Span::styled(app.channel().to_string(), t.name_style()),
+        Span::styled("  target ", dim),
+        Span::styled(app.target_label().to_string(), t.title_style()),
+        Span::raw(" "),
+    ]);
+
+    f.render_widget(Paragraph::new(Line::from(spans)), chunks[0]);
+    f.render_widget(Paragraph::new(context), chunks[1]);
+}
+
+fn context_pills_width(app: &App) -> usize {
+    // Keep channel/target visible without dedicating a full top bar to them.
+    18 + app.channel().chars().count() + app.target_label().chars().count()
 }
 
 pub(super) fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
@@ -97,12 +102,18 @@ fn context_keys(app: &App) -> &'static str {
         Mode::ChannelEdit => "↵ confirm  esc cancel",
         Mode::Browsing => match app.tab {
             Tab::Search => match app.search_input_mode {
-                SearchInputMode::Insert => "↑↓ nav  ↵ install  ^g target  ^n channel  tab switch  esc normal",
-                SearchInputMode::Normal => "j/k nav  h/l tabs  ↵ install  i insert  ^g target  ^n channel  esc quit",
+                SearchInputMode::Insert => {
+                    "↑↓ nav  ↵ install  ^g target  ^n channel  tab switch  esc normal"
+                }
+                SearchInputMode::Normal => {
+                    "j/k nav  h/l tabs  ↵ install  i insert  ^g target  ^n channel  esc quit"
+                }
             },
             Tab::Installed => match app.installed_input_mode {
                 SearchInputMode::Insert => "↑↓ nav  tab switch  esc normal",
-                SearchInputMode::Normal => "j/k nav  h/l tabs  d uninstall  m migrate  M migrate all  i filter  esc quit",
+                SearchInputMode::Normal => {
+                    "j/k nav  h/l tabs  d uninstall  m migrate  M migrate all  i filter  esc quit"
+                }
             },
             Tab::Building => "h/l tabs  esc quit",
             Tab::Queue => "h/l tabs  esc quit",

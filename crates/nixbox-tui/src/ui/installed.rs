@@ -1,13 +1,13 @@
 use nixbox_config::Target;
 use nixbox_nix::scan::ScanTarget;
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
-use ratatui::Frame;
 
-use crate::app::App;
 use super::titled_panel;
+use crate::app::App;
 
 const TAG_WIDTH: usize = 7; // "[nixos]"
 
@@ -28,9 +28,7 @@ pub(super) fn draw_installed_body(f: &mut Frame, area: Rect, app: &App) {
             "No packages tracked yet.\n\nSwitch to the Search tab and press ↵ on a result to install.".to_string()
         };
         f.render_widget(
-            Paragraph::new(body)
-                .block(block)
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(body).block(block).wrap(Wrap { trim: false }),
             area,
         );
         return;
@@ -45,7 +43,10 @@ pub(super) fn draw_installed_body(f: &mut Frame, area: Rect, app: &App) {
 
     // Managed section ----------------------------------------------------
     if !managed.is_empty() {
-        let hm_count = managed.iter().filter(|p| p.scope == Target::HomeManager).count();
+        let hm_count = managed
+            .iter()
+            .filter(|p| p.scope == Target::HomeManager)
+            .count();
         let nx_count = managed.len() - hm_count;
         let header = format!(
             " Managed  ({} · {} hm, {} nixos) ",
@@ -71,7 +72,10 @@ pub(super) fn draw_installed_body(f: &mut Frame, area: Rect, app: &App) {
         if !managed.is_empty() {
             items.push(ListItem::new(Line::raw("")));
         }
-        let hm_count = external.iter().filter(|ep| matches!(ep.scope, ScanTarget::HomeManager)).count();
+        let hm_count = external
+            .iter()
+            .filter(|ep| matches!(ep.scope, ScanTarget::HomeManager))
+            .count();
         let nx_count = external.len() - hm_count;
         let migratable_count = external.iter().filter(|ep| ep.migratable).count();
         let header = format!(
@@ -140,14 +144,8 @@ pub(super) fn draw_installed_body(f: &mut Frame, area: Rect, app: &App) {
 
 fn scope_tag(target: Target) -> (String, Style) {
     match target {
-        Target::HomeManager => (
-            "[hm]".to_string(),
-            Style::default().fg(Color::Cyan),
-        ),
-        Target::NixosSystem => (
-            "[nixos]".to_string(),
-            Style::default().fg(Color::Magenta),
-        ),
+        Target::HomeManager => ("[hm]".to_string(), Style::default().fg(Color::Cyan)),
+        Target::NixosSystem => ("[nixos]".to_string(), Style::default().fg(Color::Magenta)),
     }
 }
 

@@ -12,8 +12,7 @@ pub fn ensure_home_nix(dir: &Path) -> Result<()> {
     if home_nix.exists() {
         return Ok(());
     }
-    fs::create_dir_all(dir)
-        .with_context(|| format!("creating {}", dir.display()))?;
+    fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let username = std::env::var("USER").unwrap_or_else(|_| "user".into());
     let home_dir = std::env::var("HOME").unwrap_or_else(|_| format!("/home/{username}"));
     let content = format!(
@@ -28,8 +27,7 @@ pub fn ensure_home_nix(dir: &Path) -> Result<()> {
          \x20 programs.home-manager.enable = true;\n\
          }}\n"
     );
-    fs::write(&home_nix, content)
-        .with_context(|| format!("writing {}", home_nix.display()))?;
+    fs::write(&home_nix, content).with_context(|| format!("writing {}", home_nix.display()))?;
     Ok(())
 }
 
@@ -82,11 +80,9 @@ impl ManagedFile {
 
     fn write(&self, content: String) -> Result<()> {
         if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
-        fs::write(&self.path, content)
-            .with_context(|| format!("writing {}", self.path.display()))
+        fs::write(&self.path, content).with_context(|| format!("writing {}", self.path.display()))
     }
 }
 
@@ -191,7 +187,9 @@ pub fn ensure_imported(main_file: &Path, managed_file: &Path) -> Result<ImportSt
 /// Best-effort relative path from `base` to `target`. Falls back to the
 /// absolute target when no relative path is possible.
 fn pathdiff_relative(target: &Path, base: &Path) -> String {
-    let target = target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
+    let target = target
+        .canonicalize()
+        .unwrap_or_else(|_| target.to_path_buf());
     let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
     let target_components: Vec<_> = target.components().collect();
     let base_components: Vec<_> = base.components().collect();
@@ -218,7 +216,8 @@ fn contains_import(raw: &str, import_str: &str) -> bool {
     // (e.g. `./nixbox-home-packages.nix` vs `./nixbox-home-packages.nix.bak`).
     for (idx, _) in raw.match_indices(import_str) {
         let after = raw[idx + import_str.len()..].chars().next();
-        let token_continues = matches!(after, Some(c) if c.is_alphanumeric() || c == '-' || c == '_' || c == '.');
+        let token_continues =
+            matches!(after, Some(c) if c.is_alphanumeric() || c == '-' || c == '_' || c == '.');
         if !token_continues {
             return true;
         }
@@ -421,7 +420,8 @@ mod tests {
 
     #[test]
     fn inserts_into_multiline_imports() {
-        let raw = "{ pkgs, ... }:\n{\n    imports = [\n        ./a.nix\n        ./b.nix\n    ];\n}\n";
+        let raw =
+            "{ pkgs, ... }:\n{\n    imports = [\n        ./a.nix\n        ./b.nix\n    ];\n}\n";
         let out = insert_into_imports_list(raw, "./nixbox-home-packages.nix").unwrap();
         assert!(out.contains("./nixbox-home-packages.nix\n        ./a.nix"));
     }
