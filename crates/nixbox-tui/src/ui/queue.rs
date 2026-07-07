@@ -1,11 +1,11 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
-use ratatui::Frame;
 
+use super::{SPINNER, titled_panel};
 use crate::app::App;
-use super::{titled_panel, SPINNER};
 
 pub(super) fn draw_queue_body(f: &mut Frame, area: Rect, app: &App) {
     let t = app.theme();
@@ -37,5 +37,10 @@ pub(super) fn draw_queue_body(f: &mut Frame, area: Rect, app: &App) {
         ]));
     }
 
-    f.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: false }), area);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }

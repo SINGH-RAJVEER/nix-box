@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
-use ratatui::Frame;
 
 use crate::app::{App, Mode, Tab};
 use crate::theme;
@@ -35,10 +35,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App) {
 
     let show_search_bar = matches!(app.tab, Tab::Search | Tab::Installed);
 
-    let mut constraints = vec![
-        Constraint::Length(3),
-        Constraint::Length(1),
-    ];
+    let mut constraints = vec![Constraint::Length(1)];
     if show_search_bar {
         constraints.push(Constraint::Length(3));
     }
@@ -51,12 +48,14 @@ pub(crate) fn draw(f: &mut Frame, app: &App) {
         .split(f.area());
 
     let mut i = 0;
-    bars::draw_info_bar(f, chunks[i], app); i += 1;
-    bars::draw_tab_strip(f, chunks[i], app); i += 1;
+    bars::draw_tab_strip(f, chunks[i], app);
+    i += 1;
     if show_search_bar {
-        bars::draw_search_bar(f, chunks[i], app); i += 1;
+        bars::draw_search_bar(f, chunks[i], app);
+        i += 1;
     }
-    let body_area = chunks[i]; i += 1;
+    let body_area = chunks[i];
+    i += 1;
     let footer_area = chunks[i];
 
     match app.tab {

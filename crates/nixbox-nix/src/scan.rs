@@ -39,8 +39,7 @@ pub fn scan(path: &Path, target: ScanTarget) -> Result<Vec<ExternalPackage>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     Ok(parse(&raw, target))
 }
 
@@ -86,16 +85,17 @@ fn parse(raw: &str, target: ScanTarget) -> Vec<ExternalPackage> {
             // Only treat lines at the outermost depth, with no bracket change,
             // as candidate package entries. Lines that open/close nested
             // structures are skipped.
-            if depth == outer_depth && delta == 0 {
-                if let Some(name) = extract_entry(content, open.with_pkgs) {
-                    out.push(ExternalPackage {
-                        name,
-                        source_attr: open.source_attr.clone(),
-                        line: j,
-                        migratable: true,
-                        scope: target,
-                    });
-                }
+            if depth == outer_depth
+                && delta == 0
+                && let Some(name) = extract_entry(content, open.with_pkgs)
+            {
+                out.push(ExternalPackage {
+                    name,
+                    source_attr: open.source_attr.clone(),
+                    line: j,
+                    migratable: true,
+                    scope: target,
+                });
             }
             depth += delta;
             j += 1;
@@ -191,9 +191,7 @@ fn extract_trailing_attr_path(s: &str) -> Option<String> {
 /// package-list-ish suffix and the path is in scope for `target`.
 fn matches_target(lhs: &str, target: ScanTarget) -> bool {
     let last = lhs.rsplit('.').next().unwrap_or("");
-    let pkg_like = last.ends_with("ackages")
-        || last.ends_with("ortals")
-        || last.ends_with("hemes");
+    let pkg_like = last.ends_with("ackages") || last.ends_with("ortals") || last.ends_with("hemes");
     if !pkg_like {
         return false;
     }
@@ -212,7 +210,9 @@ fn matches_target(lhs: &str, target: ScanTarget) -> bool {
 /// Pulls entries from text between `[` (on this line) and the next `]` or end
 /// of line. Used for inline one-liner lists.
 fn same_line_entries(line: &str, with_pkgs: bool) -> Vec<String> {
-    let Some(open_pos) = line.find('[') else { return Vec::new() };
+    let Some(open_pos) = line.find('[') else {
+        return Vec::new();
+    };
     let after_open = &line[open_pos + 1..];
     let inside = match after_open.find(']') {
         Some(p) => &after_open[..p],
@@ -248,7 +248,12 @@ fn clean_token(token: &str, with_pkgs: bool) -> Option<String> {
     // Reject anything with syntactic noise — these are complex expressions,
     // function applications, attribute selections through interpolation,
     // string literals, etc.
-    if token.chars().any(|c| matches!(c, '(' | ')' | '{' | '}' | '[' | ']' | '"' | '\'' | '=' | '$' | '\\')) {
+    if token.chars().any(|c| {
+        matches!(
+            c,
+            '(' | ')' | '{' | '}' | '[' | ']' | '"' | '\'' | '=' | '$' | '\\'
+        )
+    }) {
         return None;
     }
     let (candidate, had_prefix) = if let Some(rest) = token.strip_prefix("pkgs.") {
@@ -280,7 +285,9 @@ fn clean_token(token: &str, with_pkgs: bool) -> Option<String> {
 
 fn is_nix_ident(s: &str) -> bool {
     let mut chars = s.chars();
-    let Some(first) = chars.next() else { return false };
+    let Some(first) = chars.next() else {
+        return false;
+    };
     if !(first.is_ascii_alphabetic() || first == '_') {
         return false;
     }
@@ -332,8 +339,7 @@ pub fn remove_from_source(
     if names.is_empty() || !path.exists() {
         return Ok(Vec::new());
     }
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let externals = parse(&raw, target);
     let wanted: HashSet<&str> = names.iter().map(String::as_str).collect();
 
@@ -361,8 +367,7 @@ pub fn remove_from_source(
     if !trailing_newline && out.ends_with('\n') {
         out.pop();
     }
-    fs::write(path, out)
-        .with_context(|| format!("writing {}", path.display()))?;
+    fs::write(path, out).with_context(|| format!("writing {}", path.display()))?;
     Ok(removed)
 }
 
@@ -460,7 +465,10 @@ mod tests {
         let src = "{ hardware.graphics.extraPackages = [ pkgs.rocmPackages.clr.icd ]; }\n";
         let pkgs = parse(src, ScanTarget::Nixos);
         assert_eq!(names(&pkgs), vec!["rocmPackages.clr.icd"]);
-        assert!(!pkgs[0].migratable, "inline list entries should not be migratable");
+        assert!(
+            !pkgs[0].migratable,
+            "inline list entries should not be migratable"
+        );
     }
 
     #[test]
@@ -564,15 +572,16 @@ mod tests {
 }
 "#;
         let pkgs = parse(src, ScanTarget::Nixos);
-        assert!(pkgs.is_empty(), "complex override should produce no entries: {:?}", pkgs);
+        assert!(
+            pkgs.is_empty(),
+            "complex override should produce no entries: {:?}",
+            pkgs
+        );
     }
 
     #[test]
     fn remove_from_source_round_trip() {
-        let tmp = std::env::temp_dir().join(format!(
-            "nixbox-scan-test-{}.nix",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("nixbox-scan-test-{}.nix", std::process::id()));
         let src = r#"{ pkgs, ... }:
 {
   home.packages = with pkgs; [
@@ -584,8 +593,7 @@ mod tests {
 "#;
         fs::write(&tmp, src).unwrap();
         let removed =
-            remove_from_source(&tmp, ScanTarget::HomeManager, &["fd".into(), "jq".into()])
-                .unwrap();
+            remove_from_source(&tmp, ScanTarget::HomeManager, &["fd".into(), "jq".into()]).unwrap();
         assert_eq!(removed, vec!["fd".to_string(), "jq".to_string()]);
         let after = fs::read_to_string(&tmp).unwrap();
         let _ = fs::remove_file(&tmp);
@@ -601,24 +609,39 @@ mod tests {
         let config_nix = std::path::Path::new("/home/rajveer/.config/nixos/configuration.nix");
 
         println!("\n=== HomeManager scan ({}) ===", home_nix.display());
-        let hm = parse(&fs::read_to_string(home_nix).unwrap(), ScanTarget::HomeManager);
+        let hm = parse(
+            &fs::read_to_string(home_nix).unwrap(),
+            ScanTarget::HomeManager,
+        );
         println!("Found {} entries:", hm.len());
         for ep in &hm {
-            println!("  {} {:<30} in {} (line {})",
+            println!(
+                "  {} {:<30} in {} (line {})",
                 if ep.migratable { "[M]" } else { "[-]" },
-                ep.name, ep.source_attr, ep.line + 1);
+                ep.name,
+                ep.source_attr,
+                ep.line + 1
+            );
         }
 
         println!("\n=== NixOS scan ({}) ===", config_nix.display());
         let nx = parse(&fs::read_to_string(config_nix).unwrap(), ScanTarget::Nixos);
         println!("Found {} entries:", nx.len());
         for ep in &nx {
-            println!("  {} {:<30} in {} (line {})",
+            println!(
+                "  {} {:<30} in {} (line {})",
                 if ep.migratable { "[M]" } else { "[-]" },
-                ep.name, ep.source_attr, ep.line + 1);
+                ep.name,
+                ep.source_attr,
+                ep.line + 1
+            );
         }
 
-        println!("\nTotal: {} hm + {} nixos = {} packages detected",
-            hm.len(), nx.len(), hm.len() + nx.len());
+        println!(
+            "\nTotal: {} hm + {} nixos = {} packages detected",
+            hm.len(),
+            nx.len(),
+            hm.len() + nx.len()
+        );
     }
 }
