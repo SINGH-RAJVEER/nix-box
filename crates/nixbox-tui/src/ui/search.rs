@@ -1,14 +1,14 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
-use ratatui::Frame;
 
 use nixbox_config::Target;
 use nixbox_nix::scan::ScanTarget;
 
+use super::{SPINNER, titled_panel};
 use crate::app::App;
-use super::{titled_panel, SPINNER};
 
 struct HitStatus {
     managed_hm: bool,
@@ -22,12 +22,21 @@ impl HitStatus {
         let managed_hm = app.home_manifest.packages.contains(attr);
         let managed_nixos = app.nixos_manifest.packages.contains(attr);
         let external_hm = !managed_hm
-            && app.external_packages.iter()
+            && app
+                .external_packages
+                .iter()
                 .any(|ep| ep.name == attr && ep.scope == ScanTarget::HomeManager);
         let external_nixos = !managed_nixos
-            && app.external_packages.iter()
+            && app
+                .external_packages
+                .iter()
                 .any(|ep| ep.name == attr && ep.scope == ScanTarget::Nixos);
-        Self { managed_hm, managed_nixos, external_hm, external_nixos }
+        Self {
+            managed_hm,
+            managed_nixos,
+            external_hm,
+            external_nixos,
+        }
     }
 
     fn any_installed(&self) -> bool {
@@ -51,9 +60,7 @@ pub(super) fn draw_search_body(f: &mut Frame, area: Rect, app: &App) {
 
     let results_block = titled_panel(t, Span::styled("Results", t.title_style()));
 
-    let no_results = !app.searching
-        && !app.latest_query.is_empty()
-        && app.results.is_empty();
+    let no_results = !app.searching && !app.latest_query.is_empty() && app.results.is_empty();
 
     if app.searching && app.results.is_empty() {
         let frame = SPINNER[app.spinner_frame % SPINNER.len()];
@@ -62,7 +69,10 @@ pub(super) fn draw_search_body(f: &mut Frame, area: Rect, app: &App) {
         let mut lines: Vec<Line> = (0..pad).map(|_| Line::raw("")).collect();
         lines.push(Line::from(vec![
             Span::styled(format!("  {}  ", frame), t.version_style()),
-            Span::styled("Searching nixpkgs…", Style::default().add_modifier(Modifier::DIM)),
+            Span::styled(
+                "Searching nixpkgs…",
+                Style::default().add_modifier(Modifier::DIM),
+            ),
         ]));
         f.render_widget(Paragraph::new(lines).block(results_block), split[0]);
     } else if no_results {
@@ -145,7 +155,11 @@ pub(super) fn draw_search_body(f: &mut Frame, area: Rect, app: &App) {
                 (status.external_nixos, false, "nixos"),
             ] {
                 if installed {
-                    let kind = if managed { "nixbox-managed" } else { "in config" };
+                    let kind = if managed {
+                        "nixbox-managed"
+                    } else {
+                        "in config"
+                    };
                     lines.push(Line::from(vec![
                         Span::styled("✓ ", green),
                         Span::styled(kind, green),
@@ -167,7 +181,9 @@ pub(super) fn draw_search_body(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(Span::styled(hint, dim)));
 
         f.render_widget(
-            Paragraph::new(lines).block(detail_block).wrap(Wrap { trim: false }),
+            Paragraph::new(lines)
+                .block(detail_block)
+                .wrap(Wrap { trim: false }),
             split[1],
         );
     } else {
@@ -182,7 +198,9 @@ pub(super) fn draw_search_body(f: &mut Frame, area: Rect, app: &App) {
             Line::from(Span::styled("h/l  switch tabs", dim)),
         ];
         f.render_widget(
-            Paragraph::new(lines).block(detail_block).wrap(Wrap { trim: false }),
+            Paragraph::new(lines)
+                .block(detail_block)
+                .wrap(Wrap { trim: false }),
             split[1],
         );
     }

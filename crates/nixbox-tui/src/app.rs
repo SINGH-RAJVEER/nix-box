@@ -3,23 +3,23 @@ use std::io;
 use std::time::Duration;
 
 use anyhow::Result;
-use nixbox_config::{Config, Target};
-use nixbox_nix::{
-    build::BuildEvent,
-    manifest::ManagedFile,
-    scan::{scan, ExternalPackage, ScanTarget},
-    search::SearchHit,
-    Manifest,
-};
 use crossterm::event::EventStream;
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use futures::StreamExt;
-use ratatui::backend::CrosstermBackend;
+use nixbox_config::{Config, Target};
+use nixbox_nix::{
+    Manifest,
+    build::BuildEvent,
+    manifest::ManagedFile,
+    scan::{ExternalPackage, ScanTarget, scan},
+    search::SearchHit,
+};
 use ratatui::Terminal;
-use tokio::sync::mpsc;
+use ratatui::backend::CrosstermBackend;
+use tokio::{sync::mpsc, task::JoinHandle};
 use tui_input::Input;
 
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,7 @@ use crate::ui;
 
 pub(crate) const CHANNELS: &[&str] = &["nixpkgs", "nixpkgs-unstable"];
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Mode {
     Browsing,
     ThemeSelect,
@@ -140,6 +140,7 @@ pub(crate) struct App {
     pub(crate) theme_cursor: usize,
     pub(crate) search_input_mode: SearchInputMode,
     pub(crate) searching: bool,
+    pub(crate) search_task: Option<JoinHandle<()>>,
     pub(crate) build_in_progress: bool,
     pub(crate) spinner_frame: usize,
     pub(crate) queue: VecDeque<QueuedOp>,
@@ -155,7 +156,7 @@ pub(crate) struct App {
 }
 
 impl App {
-    fn new(
+    pub(crate) fn new(
         config: Config,
         home_manifest: Manifest,
         nixos_manifest: Manifest,
@@ -194,6 +195,7 @@ impl App {
             theme_cursor: theme_index,
             search_input_mode: SearchInputMode::Normal,
             searching: false,
+            search_task: None,
             build_in_progress: false,
             spinner_frame: 0,
             queue: VecDeque::new(),
@@ -330,11 +332,8 @@ impl App {
     /// Re-reads both main config files and refreshes `external_packages`,
     /// excluding anything already tracked in either manifest.
     pub(crate) fn refresh_external_packages(&mut self) {
-        self.external_packages = read_external_packages(
-            &self.config,
-            &self.home_manifest,
-            &self.nixos_manifest,
-        );
+        self.external_packages =
+            read_external_packages(&self.config, &self.home_manifest, &self.nixos_manifest);
         let total = self.installed_total();
         if total == 0 {
             self.installed_selected = 0;
@@ -407,6 +406,135 @@ pub async fn run() -> Result<()> {
     result
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handlers::handle_app_event;
+    use nixbox_config::{Config, Target};
+    use tokio::sync::mpsc;
+
+    fn hit(name: &str) -> SearchHit {
+        SearchHit {
+            attr: name.into(),
+            pname: name.into(),
+            version: "1.0".into(),
+            description: String::new(),
+        }
+    }
+
+    fn test_app() -> App {
+        App::new(
+            Config::default(),
+            Manifest::default(),
+            Manifest::default(),
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn app_initializes_with_expected_defaults() {
+        let app = test_app();
+
+        assert_eq!(app.tab, Tab::Search);
+        assert_eq!(app.mode, Mode::Browsing);
+        assert_eq!(app.search_epoch, 0);
+        assert!(!app.searching);
+        assert!(app.results.is_empty());
+        assert_eq!(app.manifest_for(Target::HomeManager).packages.len(), 0);
+        assert_eq!(app.manifest_for(Target::NixosSystem).packages.len(), 0);
+        assert_eq!(app.visible_tabs(), vec![Tab::Search, Tab::Installed]);
+    }
+
+    #[test]
+    fn visible_tabs_include_build_and_queue_only_when_needed() {
+        let mut app = test_app();
+        app.build_in_progress = true;
+        assert_eq!(
+            app.visible_tabs(),
+            vec![Tab::Search, Tab::Installed, Tab::Building]
+        );
+
+        app.queue.push_back(QueuedOp::Uninstall {
+            name: "ripgrep".into(),
+            scope: Target::HomeManager,
+        });
+        assert_eq!(
+            app.visible_tabs(),
+            vec![Tab::Search, Tab::Installed, Tab::Building, Tab::Queue]
+        );
+    }
+
+    #[test]
+    fn stale_search_results_are_ignored() {
+        let (tx, _rx) = mpsc::channel(1);
+        let mut app = test_app();
+        app.search_epoch = 2;
+        app.searching = true;
+        app.latest_query = "fd".into();
+
+        handle_app_event(
+            &mut app,
+            &tx,
+            AppEvent::SearchDone {
+                epoch: 1,
+                hits: vec![hit("wrong")],
+            },
+        );
+
+        assert!(app.searching);
+        assert!(app.results.is_empty());
+        assert_eq!(app.status, "0 packages tracked.");
+    }
+
+    #[test]
+    fn current_search_results_replace_previous_results() {
+        let (tx, _rx) = mpsc::channel(1);
+        let mut app = test_app();
+        app.search_epoch = 7;
+        app.searching = true;
+        app.latest_query = "rg".into();
+        app.results = vec![hit("old")];
+        app.selected = 10;
+
+        handle_app_event(
+            &mut app,
+            &tx,
+            AppEvent::SearchDone {
+                epoch: 7,
+                hits: vec![hit("ripgrep"), hit("ripgrep-all")],
+            },
+        );
+
+        assert!(!app.searching);
+        assert_eq!(app.results.len(), 2);
+        assert_eq!(app.results[0].attr, "ripgrep");
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.status, "2 matches for `rg`");
+    }
+
+    #[test]
+    fn current_search_failure_clears_results() {
+        let (tx, _rx) = mpsc::channel(1);
+        let mut app = test_app();
+        app.search_epoch = 3;
+        app.searching = true;
+        app.results = vec![hit("old")];
+
+        handle_app_event(
+            &mut app,
+            &tx,
+            AppEvent::SearchFailed {
+                epoch: 3,
+                error: "boom".into(),
+            },
+        );
+
+        assert!(!app.searching);
+        assert!(app.results.is_empty());
+        assert_eq!(app.status, "search failed: boom");
+    }
+}
+
 async fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     config: Config,
@@ -424,6 +552,9 @@ async fn event_loop(
     loop {
         terminal.draw(|f| ui::draw(f, &app))?;
         if app.should_quit {
+            if let Some(task) = app.search_task.take() {
+                task.abort();
+            }
             break;
         }
 
@@ -438,6 +569,9 @@ async fn event_loop(
                 app.spinner_frame = app.spinner_frame.wrapping_add(1);
             }
         }
+    }
+    if let Some(handle) = app.search_task.take() {
+        handle.abort();
     }
     Ok(())
 }

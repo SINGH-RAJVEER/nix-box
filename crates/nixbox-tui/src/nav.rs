@@ -1,6 +1,6 @@
 use nixbox_config::Target;
 
-use crate::app::{App, Mode, SearchInputMode, Tab, CHANNELS};
+use crate::app::{App, CHANNELS, Mode, SearchInputMode, Tab};
 use crate::theme;
 
 pub(crate) fn move_selection(app: &mut App, delta: i32) {

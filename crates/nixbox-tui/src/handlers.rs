@@ -1,15 +1,19 @@
 use anyhow::Result;
 use crossterm::event::{Event as CtEvent, KeyCode, KeyEventKind, KeyModifiers};
 use nixbox_nix::build::BuildEvent;
+use nixbox_nix::search::MAX_SEARCH_RESULTS;
 use tokio::sync::mpsc;
 use tui_input::backend::crossterm::EventHandler;
 
-use crate::app::{App, AppEvent, Mode, SearchInputMode, Tab, CHANNELS};
+use crate::app::{App, AppEvent, CHANNELS, Mode, SearchInputMode, Tab};
 use crate::nav::{
-    cycle_tab, cycle_tab_back, move_installed_selection, move_selection, open_channel_edit,
-    toggle_target, cycle_theme,
+    cycle_tab, cycle_tab_back, cycle_theme, move_installed_selection, move_selection,
+    open_channel_edit, toggle_target,
 };
-use crate::ops::{drain_queue, install_selected, migrate_all, migrate_selected, schedule_search, uninstall_selected};
+use crate::ops::{
+    drain_queue, install_selected, migrate_all, migrate_selected, schedule_search,
+    uninstall_selected,
+};
 use crate::theme;
 
 pub(crate) async fn handle_terminal_event(
@@ -54,18 +58,30 @@ pub(crate) async fn handle_terminal_event(
     }
 
     match key.code {
-        KeyCode::Tab => { cycle_tab(app); return Ok(()); }
-        KeyCode::BackTab => { cycle_tab_back(app); return Ok(()); }
+        KeyCode::Tab => {
+            cycle_tab(app);
+            return Ok(());
+        }
+        KeyCode::BackTab => {
+            cycle_tab_back(app);
+            return Ok(());
+        }
         KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            toggle_target(app); return Ok(());
+            toggle_target(app);
+            return Ok(());
         }
         KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            cycle_theme(app); return Ok(());
+            cycle_theme(app);
+            return Ok(());
         }
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            open_channel_edit(app); return Ok(());
+            open_channel_edit(app);
+            return Ok(());
         }
-        KeyCode::Esc => { app.should_quit = true; return Ok(()); }
+        KeyCode::Esc => {
+            app.should_quit = true;
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -195,16 +211,27 @@ pub(crate) fn handle_app_event(app: &mut App, tx: &mpsc::Sender<AppEvent>, ev: A
     match ev {
         AppEvent::SearchDone { epoch, hits } => {
             if epoch == app.search_epoch {
+                app.search_task = None;
                 app.searching = false;
+                app.search_task = None;
                 let count = hits.len();
                 app.results = hits;
                 app.selected = 0;
-                app.status = format!("{} matches for `{}`", count, app.latest_query);
+                app.status = if count == MAX_SEARCH_RESULTS {
+                    format!(
+                        "Showing first {} matches for `{}`; refine search for more.",
+                        count, app.latest_query
+                    )
+                } else {
+                    format!("{} matches for `{}`", count, app.latest_query)
+                };
             }
         }
         AppEvent::SearchFailed { epoch, error } => {
             if epoch == app.search_epoch {
+                app.search_task = None;
                 app.searching = false;
+                app.search_task = None;
                 app.results.clear();
                 app.status = format!("search failed: {}", error);
             }
@@ -217,7 +244,10 @@ pub(crate) fn handle_app_event(app: &mut App, tx: &mpsc::Sender<AppEvent>, ev: A
             }
         }
         AppEvent::Build(BuildEvent::Finished(result)) => {
-            let label = app.current_op_label.take().unwrap_or_else(|| "build".into());
+            let label = app
+                .current_op_label
+                .take()
+                .unwrap_or_else(|| "build".into());
             app.build_in_progress = false;
             app.in_progress_op = None;
             match &result {
@@ -241,4 +271,3 @@ pub(crate) fn handle_app_event(app: &mut App, tx: &mpsc::Sender<AppEvent>, ev: A
         }
     }
 }
-

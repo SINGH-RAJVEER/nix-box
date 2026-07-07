@@ -4,11 +4,11 @@ use anyhow::Result;
 use nixbox_config::Target;
 use nixbox_nix::{
     build::{
-        flake_has_home_configuration, home_manager_switch_cmd, nixos_rebuild_switch_cmd, rebuild,
-        BuildEvent,
+        BuildEvent, flake_has_home_configuration, home_manager_switch_cmd,
+        nixos_rebuild_switch_cmd, rebuild,
     },
-    manifest::{ensure_imported, ImportStatus, ManagedFile},
-    scan::{remove_from_source, ScanTarget},
+    manifest::{ImportStatus, ManagedFile, ensure_imported},
+    scan::{ScanTarget, remove_from_source},
 };
 use tokio::sync::mpsc;
 use tokio::time::sleep;
@@ -72,10 +72,7 @@ fn git_track(path: &std::path::Path) -> Option<String> {
 }
 
 /// Notes describing any change that should be surfaced to the user.
-fn ensure_imported_note(
-    main_file: &std::path::Path,
-    managed: &ManagedFile,
-) -> Option<String> {
+fn ensure_imported_note(main_file: &std::path::Path, managed: &ManagedFile) -> Option<String> {
     match ensure_imported(main_file, managed.path()) {
         Ok(ImportStatus::AlreadyImported) => None,
         Ok(ImportStatus::InsertedIntoList) => Some(format!(
@@ -150,13 +147,19 @@ pub(crate) fn spawn_rebuild(
                 };
                 cmd_owned = c;
                 args_owned = a;
-                (cmd_owned.as_str(), args_owned.iter().map(|s| s.as_str()).collect())
+                (
+                    cmd_owned.as_str(),
+                    args_owned.iter().map(|s| s.as_str()).collect(),
+                )
             }
             Target::NixosSystem => {
                 let (c, a) = nixos_rebuild_switch_cmd(&config_dir);
                 cmd_owned = c;
                 args_owned = a;
-                (cmd_owned.as_str(), args_owned.iter().map(|s| s.as_str()).collect())
+                (
+                    cmd_owned.as_str(),
+                    args_owned.iter().map(|s| s.as_str()).collect(),
+                )
             }
         };
         if let Err(e) = rebuild(cmd, &args, build_tx.clone()).await {
@@ -207,9 +210,8 @@ fn apply_op_to_manifest(app: &mut App, op: &QueuedOp) -> Result<()> {
                 app.manifest_for_mut(scope).add(name);
             }
             // Drop any externals that just moved into the manifest.
-            app.external_packages.retain(|ep| {
-                !(ep_target_eq(ep.scope, scope) && removed.contains(&ep.name))
-            });
+            app.external_packages
+                .retain(|ep| !(ep_target_eq(ep.scope, scope) && removed.contains(&ep.name)));
         }
     }
     let managed = write_manifest(app, scope)?;
@@ -228,10 +230,10 @@ fn apply_op_to_manifest(app: &mut App, op: &QueuedOp) -> Result<()> {
     if let Some(note) = git_track(managed.path()) {
         app.log.push(note);
     }
-    if main_file.exists() {
-        if let Some(note) = git_track(&main_file) {
-            app.log.push(note);
-        }
+    if main_file.exists()
+        && let Some(note) = git_track(&main_file)
+    {
+        app.log.push(note);
     }
     let total = app.installed_total();
     if total == 0 {
@@ -279,10 +281,7 @@ pub(crate) async fn install_selected(app: &mut App, tx: &mpsc::Sender<AppEvent>)
     Ok(())
 }
 
-pub(crate) async fn uninstall_selected(
-    app: &mut App,
-    tx: &mpsc::Sender<AppEvent>,
-) -> Result<()> {
+pub(crate) async fn uninstall_selected(app: &mut App, tx: &mpsc::Sender<AppEvent>) -> Result<()> {
     let cursor = match app.installed_cursor() {
         Some(c) => c,
         None => {
@@ -406,10 +405,7 @@ pub(crate) async fn migrate_all(app: &mut App, tx: &mpsc::Sender<AppEvent>) -> R
         });
     }
     app.persist();
-    let summary = format!(
-        "Queued migrate-all ({} hm, {} nixos).",
-        hm_count, nx_count,
-    );
+    let summary = format!("Queued migrate-all ({} hm, {} nixos).", hm_count, nx_count,);
     if app.build_in_progress {
         app.status = summary;
         app.tab = Tab::Queue;
@@ -422,6 +418,10 @@ pub(crate) async fn migrate_all(app: &mut App, tx: &mpsc::Sender<AppEvent>) -> R
 }
 
 pub(crate) fn schedule_search(app: &mut App, tx: mpsc::Sender<AppEvent>) {
+    if let Some(task) = app.search_task.take() {
+        task.abort();
+    }
+
     let query = app.input.value().to_string();
     if query.is_empty() {
         app.search_epoch += 1;
@@ -438,7 +438,7 @@ pub(crate) fn schedule_search(app: &mut App, tx: mpsc::Sender<AppEvent>) {
     let channel = app.config.channel.clone();
     app.latest_query = query.clone();
 
-    tokio::spawn(async move {
+    app.search_task = Some(tokio::spawn(async move {
         sleep(Duration::from_millis(180)).await;
         match nixbox_nix::search::search(&channel, &query).await {
             Ok(hits) => {
@@ -453,5 +453,89 @@ pub(crate) fn schedule_search(app: &mut App, tx: mpsc::Sender<AppEvent>) {
                     .await;
             }
         }
-    });
+    }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use nixbox_config::Config;
+    use nixbox_nix::{manifest::Manifest, search::SearchHit};
+    use tokio::sync::{mpsc, oneshot};
+    use tokio::time::timeout;
+    use tui_input::Input;
+
+    fn hit(name: &str) -> SearchHit {
+        SearchHit {
+            attr: name.into(),
+            pname: name.into(),
+            version: "1.0".into(),
+            description: String::new(),
+        }
+    }
+
+    fn test_app() -> App {
+        App::new(
+            Config::default(),
+            Manifest::default(),
+            Manifest::default(),
+            Vec::new(),
+        )
+    }
+
+    #[tokio::test]
+    async fn empty_query_clears_results_and_does_not_spawn_search() {
+        let (tx, _rx) = mpsc::channel(1);
+        let mut app = test_app();
+        app.input = Input::new(String::new());
+        app.results = vec![hit("ripgrep")];
+        app.selected = 4;
+        app.searching = true;
+        app.latest_query = "ripgrep".into();
+
+        schedule_search(&mut app, tx);
+
+        assert_eq!(app.search_epoch, 1);
+        assert!(!app.searching);
+        assert!(app.results.is_empty());
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.latest_query, "");
+        assert_eq!(app.status, "Type to search packages.");
+        assert!(app.search_task.is_none());
+    }
+
+    #[tokio::test]
+    async fn new_query_aborts_previous_pending_search_task() {
+        struct NotifyOnDrop(Option<oneshot::Sender<()>>);
+
+        impl Drop for NotifyOnDrop {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+
+        let (tx, _rx) = mpsc::channel(1);
+        let (dropped_tx, dropped_rx) = oneshot::channel();
+        let mut app = test_app();
+        app.input = Input::new("ripgrep".into());
+        app.search_task = Some(tokio::spawn(async move {
+            let _guard = NotifyOnDrop(Some(dropped_tx));
+            std::future::pending::<()>().await;
+        }));
+        tokio::task::yield_now().await;
+
+        schedule_search(&mut app, tx);
+
+        timeout(Duration::from_secs(1), dropped_rx)
+            .await
+            .expect("old search task should be aborted")
+            .expect("drop notification should be sent");
+        assert_eq!(app.search_epoch, 1);
+        assert!(app.searching);
+        assert_eq!(app.latest_query, "ripgrep");
+        assert!(app.search_task.is_some());
+    }
 }
