@@ -32,17 +32,29 @@ cargo install nixbox
 Or build from source:
 
 ```sh
-nix build       # via the flake
+devenv shell
 cargo build --release
 ```
 
 ## Run
 
 ```sh
-nix run         # via the flake
 nixbox          # if cargo-installed
-just run        # from a checkout
+devenv shell -- just run  # from a checkout
 ```
+
+## Development
+
+The reproducible development environment is managed by [devenv](https://devenv.sh/):
+
+```sh
+devenv shell  # Rust toolchain, Nix tooling, and just
+just ci       # format, lint, and test the workspace
+devenv test   # evaluate the environment and run just ci
+devenv update # update pinned inputs
+```
+
+With direnv installed, run `direnv allow` once to activate the environment automatically.
 
 ## Layout
 

@@ -38,33 +38,19 @@ fix: fmt lint
 clean:
     cargo clean
 
-# ── Nix ────────────────────────────────────────────────────────────────────────
-
-# Build the nixbox package via nix
-nix-build:
-    nix build --extra-experimental-features 'nix-command flakes'
-
-# Run nixbox via nix (always builds from source)
-nix-run:
-    nix run --extra-experimental-features 'nix-command flakes'
-
-# Update all flake inputs to latest
-flake-update:
-    nix flake update --extra-experimental-features 'nix-command flakes'
-
-# Evaluate all flake outputs for errors
-flake-check:
-    nix flake check --extra-experimental-features 'nix-command flakes'
-
-# Show the flake output tree
-flake-show:
-    nix flake show --extra-experimental-features 'nix-command flakes'
-
 # ── Dev ────────────────────────────────────────────────────────────────────────
 
-# Enter the nix dev shell
+# Enter the devenv shell
 dev:
-    nix develop --extra-experimental-features 'nix-command flakes'
+    devenv shell
+
+# Update pinned devenv inputs
+dev-update:
+    devenv update
+
+# Evaluate the devenv configuration and run its tests
+dev-test:
+    devenv test
 
 # Full pre-commit gate: format, lint, test
 ci: fmt lint test
