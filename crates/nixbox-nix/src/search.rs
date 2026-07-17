@@ -44,6 +44,7 @@ pub async fn search(channel: &str, query: &str) -> Result<Vec<SearchHit>> {
         .args([
             "search",
             "--json",
+            "--quiet",
             "--extra-experimental-features",
             "nix-command flakes",
             resolved,
@@ -57,7 +58,7 @@ pub async fn search(channel: &str, query: &str) -> Result<Vec<SearchHit>> {
 
     let stdout = child.stdout.take().context("capturing nix search stdout")?;
     let stderr = child.stderr.take().context("capturing nix search stderr")?;
-    let stderr_task = tokio::spawn(read_limited(stderr, MAX_SEARCH_ERROR_BYTES));
+    let stderr_task = tokio::spawn(read_capped(stderr, MAX_SEARCH_ERROR_BYTES));
 
     let stdout = match read_limited(stdout, MAX_SEARCH_OUTPUT_BYTES).await? {
         Some(stdout) => stdout,
@@ -75,8 +76,7 @@ pub async fn search(channel: &str, query: &str) -> Result<Vec<SearchHit>> {
     let status = child.wait().await.context("waiting for nix search")?;
     let stderr = stderr_task
         .await
-        .context("joining nix search stderr reader")??
-        .unwrap_or_default();
+        .context("joining nix search stderr reader")??;
 
     if !status.success() {
         let stderr = String::from_utf8_lossy(&stderr);
@@ -123,6 +123,22 @@ where
     }
 }
 
+async fn read_capped<R>(mut reader: R, limit: usize) -> std::io::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut out = Vec::new();
+    let mut buf = [0; 8192];
+    loop {
+        let n = reader.read(&mut buf).await?;
+        if n == 0 {
+            return Ok(out);
+        }
+        let remaining = limit.saturating_sub(out.len());
+        out.extend_from_slice(&buf[..n.min(remaining)]);
+    }
+}
+
 fn short_attr(full: &str) -> &str {
     full.rsplit_once('.').map(|(_, tail)| tail).unwrap_or(full)
 }
@@ -161,6 +177,17 @@ mod tests {
         let bytes = b"abcdef".to_vec();
         let out = read_limited(Cursor::new(bytes), 5).await.expect("read");
         assert_eq!(out, None);
+    }
+
+    #[tokio::test]
+    async fn read_capped_drains_bytes_beyond_limit() {
+        let bytes = b"abcdef".to_vec();
+        let mut reader = Cursor::new(bytes);
+
+        let out = read_capped(&mut reader, 3).await.expect("read");
+
+        assert_eq!(out, b"abc");
+        assert_eq!(reader.position(), 6);
     }
 
     #[test]
