@@ -10,7 +10,7 @@ use nixbox_nix::{
     manifest::{ImportStatus, ManagedFile, ensure_imported},
     scan::{ScanTarget, remove_from_source},
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
 
 use crate::app::{App, AppEvent, InstalledCursor, QueuedOp, Tab};
@@ -106,6 +106,8 @@ pub(crate) fn spawn_rebuild(
     action_label: String,
 ) {
     app.build_in_progress = true;
+    let (cancel_tx, mut cancel_rx) = oneshot::channel();
+    app.build_cancel = Some(cancel_tx);
     app.current_op_label = Some(action_label.clone());
     app.in_progress_op = Some(InProgress {
         scope,
@@ -134,7 +136,16 @@ pub(crate) fn spawn_rebuild(
                 // If the flake doesn't expose a standalone `homeConfigurations.<user>`
                 // output, the user wires home-manager in as a NixOS module — apply
                 // the change via `nixos-rebuild` instead.
-                let (c, a) = if flake_has_home_configuration(&config_dir).await {
+                let has_home_configuration = tokio::select! {
+                    has_home = flake_has_home_configuration(&config_dir) => has_home,
+                    _ = &mut cancel_rx => {
+                        let _ = build_tx.send(BuildEvent::Cancelled).await;
+                        drop(build_tx);
+                        let _ = forwarder.await;
+                        return;
+                    }
+                };
+                let (c, a) = if has_home_configuration {
                     home_manager_switch_cmd(&config_dir)
                 } else {
                     let _ = app_tx
@@ -162,7 +173,7 @@ pub(crate) fn spawn_rebuild(
                 )
             }
         };
-        if let Err(e) = rebuild(cmd, &args, build_tx.clone()).await {
+        if let Err(e) = rebuild(cmd, &args, build_tx.clone(), cancel_rx).await {
             let _ = build_tx
                 .send(BuildEvent::Finished(Err(e.to_string())))
                 .await;
@@ -170,6 +181,18 @@ pub(crate) fn spawn_rebuild(
         drop(build_tx);
         let _ = forwarder.await;
     });
+}
+
+pub(crate) fn cancel_build(app: &mut App) {
+    if !app.build_in_progress {
+        return;
+    }
+    let Some(cancel) = app.build_cancel.take() else {
+        return;
+    };
+    if cancel.send(()).is_ok() {
+        app.status = "Cancelling build...".into();
+    }
 }
 
 pub(crate) fn drain_queue(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
@@ -537,5 +560,20 @@ mod tests {
         assert!(app.searching);
         assert_eq!(app.latest_query, "ripgrep");
         assert!(app.search_task.is_some());
+    }
+
+    #[tokio::test]
+    async fn cancel_build_signals_active_rebuild() {
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        let mut app = test_app();
+        app.build_in_progress = true;
+        app.build_cancel = Some(cancel_tx);
+
+        cancel_build(&mut app);
+
+        cancel_rx.await.expect("build should be signalled");
+        assert!(app.build_cancel.is_none());
+        assert!(app.build_in_progress);
+        assert_eq!(app.status, "Cancelling build...");
     }
 }
