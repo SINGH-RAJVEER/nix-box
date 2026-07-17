@@ -115,6 +115,7 @@ fn context_keys(app: &App) -> &'static str {
                     "j/k nav  h/l tabs  d uninstall  m migrate  M migrate all  i filter  esc quit"
                 }
             },
+            Tab::Building if app.build_in_progress => "c cancel build  h/l tabs  esc quit",
             Tab::Building => "h/l tabs  esc quit",
             Tab::Queue => "h/l tabs  esc quit",
         },

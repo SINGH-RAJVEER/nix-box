@@ -11,7 +11,7 @@ use crate::nav::{
     open_channel_edit, toggle_target,
 };
 use crate::ops::{
-    drain_queue, install_selected, migrate_all, migrate_selected, schedule_search,
+    cancel_build, drain_queue, install_selected, migrate_all, migrate_selected, schedule_search,
     uninstall_selected,
 };
 use crate::theme;
@@ -137,7 +137,13 @@ pub(crate) async fn handle_terminal_event(
                 _ => {}
             },
         },
-        Tab::Building | Tab::Queue => match key.code {
+        Tab::Building => match key.code {
+            KeyCode::Char('c') => cancel_build(app),
+            KeyCode::Char('l') => cycle_tab(app),
+            KeyCode::Char('h') => cycle_tab_back(app),
+            _ => {}
+        },
+        Tab::Queue => match key.code {
             KeyCode::Char('l') => cycle_tab(app),
             KeyCode::Char('h') => cycle_tab_back(app),
             _ => {}
@@ -249,6 +255,7 @@ pub(crate) fn handle_app_event(app: &mut App, tx: &mpsc::Sender<AppEvent>, ev: A
                 .take()
                 .unwrap_or_else(|| "build".into());
             app.build_in_progress = false;
+            app.build_cancel = None;
             app.in_progress_op = None;
             match &result {
                 Ok(()) => {
@@ -265,6 +272,28 @@ pub(crate) fn handle_app_event(app: &mut App, tx: &mpsc::Sender<AppEvent>, ev: A
             }
             app.persist();
             drain_queue(app, tx);
+            if !app.visible_tabs().contains(&app.tab) {
+                app.tab = Tab::Search;
+            }
+        }
+        AppEvent::Build(BuildEvent::Cancelled) => {
+            let label = app
+                .current_op_label
+                .take()
+                .unwrap_or_else(|| "build".into());
+            app.build_in_progress = false;
+            app.build_cancel = None;
+            app.in_progress_op = None;
+            app.status = if app.queue.is_empty() {
+                format!("{} cancelled.", label)
+            } else {
+                format!(
+                    "{} cancelled; {} queued operation(s) paused.",
+                    label,
+                    app.queue.len()
+                )
+            };
+            app.persist();
             if !app.visible_tabs().contains(&app.tab) {
                 app.tab = Tab::Search;
             }

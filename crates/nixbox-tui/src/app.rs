@@ -19,7 +19,10 @@ use nixbox_nix::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+};
 use tui_input::Input;
 
 use serde::{Deserialize, Serialize};
@@ -142,6 +145,7 @@ pub(crate) struct App {
     pub(crate) searching: bool,
     pub(crate) search_task: Option<JoinHandle<()>>,
     pub(crate) build_in_progress: bool,
+    pub(crate) build_cancel: Option<oneshot::Sender<()>>,
     pub(crate) spinner_frame: usize,
     pub(crate) queue: VecDeque<QueuedOp>,
     pub(crate) current_op_label: Option<String>,
@@ -197,6 +201,7 @@ impl App {
             searching: false,
             search_task: None,
             build_in_progress: false,
+            build_cancel: None,
             spinner_frame: 0,
             queue: VecDeque::new(),
             current_op_label: None,

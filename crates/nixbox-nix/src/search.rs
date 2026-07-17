@@ -2,7 +2,7 @@ use std::fmt;
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
-use serde::de::{Deserializer, IgnoredAny, MapAccess, Visitor};
+use serde::de::{Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
@@ -80,10 +80,7 @@ pub async fn search(channel: &str, query: &str) -> Result<Vec<SearchHit>> {
         anyhow::bail!("nix search failed: {}", stderr.trim());
     }
 
-    let mut hits = parse_hits(&stdout).context("parsing nix search JSON")?;
-
-    hits.sort_by(|a, b| a.pname.cmp(&b.pname));
-    Ok(hits)
+    parse_hits(&stdout, query).context("parsing nix search JSON")
 }
 
 async fn read_limited<R>(mut reader: R, max_bytes: usize) -> Result<Vec<u8>>
@@ -133,12 +130,29 @@ where
     Ok(out)
 }
 
-fn parse_hits(input: &[u8]) -> Result<Vec<SearchHit>, serde_json::Error> {
+fn parse_hits(input: &[u8], query: &str) -> Result<Vec<SearchHit>, serde_json::Error> {
     let mut deserializer = serde_json::Deserializer::from_slice(input);
-    deserializer.deserialize_map(SearchHitsVisitor)
+    deserializer.deserialize_map(SearchHitsVisitor {
+        query: ranking_term(query),
+    })
 }
 
-struct SearchHitsVisitor;
+struct SearchHitsVisitor {
+    query: String,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct Relevance {
+    tier: u8,
+    position: usize,
+    name_len: usize,
+    name: String,
+}
+
+struct RankedHit {
+    relevance: Relevance,
+    hit: SearchHit,
+}
 
 impl<'de> Visitor<'de> for SearchHitsVisitor {
     type Value = Vec<SearchHit>;
@@ -151,22 +165,90 @@ impl<'de> Visitor<'de> for SearchHitsVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut hits = Vec::new();
+        let mut hits: Vec<RankedHit> = Vec::new();
         while let Some(attr) = map.next_key::<String>()? {
+            let raw = map.next_value::<RawHit>()?;
+            let hit = SearchHit {
+                attr: short_attr(&attr).to_string(),
+                pname: raw.pname,
+                version: raw.version,
+                description: raw.description,
+            };
+            let ranked = RankedHit {
+                relevance: relevance(&hit, &self.query),
+                hit,
+            };
+
             if hits.len() < MAX_SEARCH_RESULTS {
-                let raw = map.next_value::<RawHit>()?;
-                hits.push(SearchHit {
-                    attr: short_attr(&attr).to_string(),
-                    pname: raw.pname,
-                    version: raw.version,
-                    description: raw.description,
-                });
+                hits.push(ranked);
             } else {
-                let _ = map.next_value::<IgnoredAny>()?;
+                let (worst_index, worst) = hits
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, ranked)| &ranked.relevance)
+                    .expect("bounded result set is not empty");
+                if ranked.relevance < worst.relevance {
+                    hits[worst_index] = ranked;
+                }
             }
         }
-        Ok(hits)
+        hits.sort_by(|a, b| a.relevance.cmp(&b.relevance));
+        Ok(hits.into_iter().map(|ranked| ranked.hit).collect())
     }
+}
+
+fn ranking_term(query: &str) -> String {
+    let query = query.trim();
+    let query = query.strip_prefix('^').unwrap_or(query);
+    query.strip_suffix('$').unwrap_or(query).to_lowercase()
+}
+
+fn relevance(hit: &SearchHit, query: &str) -> Relevance {
+    let attr = hit.attr.to_lowercase();
+    let pname = hit.pname.to_lowercase();
+    let description = hit.description.to_lowercase();
+    let names = [&pname, &attr];
+
+    let (tier, position) = if query.is_empty() {
+        (6, usize::MAX)
+    } else if names.iter().any(|name| name.as_str() == query) {
+        (0, 0)
+    } else if names.iter().any(|name| name.starts_with(query)) {
+        (1, 0)
+    } else if let Some(position) = names
+        .iter()
+        .filter_map(|name| token_position(name, query))
+        .min()
+    {
+        (2, position)
+    } else if let Some(position) = names.iter().filter_map(|name| name.find(query)).min() {
+        (3, position)
+    } else if let Some(position) = token_position(&description, query) {
+        (4, position)
+    } else if let Some(position) = description.find(query) {
+        (5, position)
+    } else {
+        (6, usize::MAX)
+    };
+
+    Relevance {
+        tier,
+        position,
+        name_len: pname.chars().count(),
+        name: pname,
+    }
+}
+
+fn token_position(haystack: &str, needle: &str) -> Option<usize> {
+    haystack
+        .match_indices(needle)
+        .find_map(|(position, matched)| {
+            let before = haystack[..position].chars().next_back();
+            let after = haystack[position + matched.len()..].chars().next();
+            let starts_token = before.is_none_or(|ch| !ch.is_alphanumeric());
+            let ends_token = after.is_none_or(|ch| !ch.is_alphanumeric());
+            (starts_token && ends_token).then_some(position)
+        })
 }
 
 fn short_attr(full: &str) -> &str {
@@ -235,25 +317,78 @@ mod tests {
         }
         json.push('}');
 
-        let hits = parse_hits(json.as_bytes()).unwrap();
+        let hits = parse_hits(json.as_bytes(), "pkg").unwrap();
 
         assert_eq!(hits.len(), MAX_SEARCH_RESULTS);
         assert_eq!(hits[0].attr, "pkg0");
-        assert_eq!(
-            hits[MAX_SEARCH_RESULTS - 1].attr,
-            format!("pkg{}", MAX_SEARCH_RESULTS - 1)
-        );
     }
 
     #[test]
     fn parse_hits_accepts_missing_description() {
         let hits = parse_hits(
             br#"{"legacyPackages.x86_64-linux.ripgrep":{"pname":"ripgrep","version":"14.1.1"}}"#,
+            "ripgrep",
         )
         .unwrap();
 
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].attr, "ripgrep");
         assert_eq!(hits[0].description, "");
+    }
+
+    #[test]
+    fn exact_match_displaces_early_weak_matches() {
+        let mut json = String::from("{");
+        for i in 0..MAX_SEARCH_RESULTS {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&format!(
+                r#""legacyPackages.x86_64-linux.weak{i}":{{"pname":"weak{i}","version":"1.0","description":"A tool written in Go"}}"#
+            ));
+        }
+        json.push_str(
+            r#", "legacyPackages.x86_64-linux.go":{"pname":"go","version":"1.24","description":"The Go compiler"}}"#,
+        );
+        json.push('}');
+
+        let hits = parse_hits(json.as_bytes(), "go").unwrap();
+
+        assert_eq!(hits.len(), MAX_SEARCH_RESULTS);
+        assert_eq!(hits[0].pname, "go");
+        assert_eq!(
+            hits.iter()
+                .filter(|hit| hit.pname.starts_with("weak"))
+                .count(),
+            MAX_SEARCH_RESULTS - 1
+        );
+    }
+
+    #[test]
+    fn ranks_name_matches_before_description_matches() {
+        let hits = parse_hits(
+            br#"{
+                "legacyPackages.x86_64-linux.air":{"pname":"air","version":"1","description":"Live reload for Go apps"},
+                "legacyPackages.x86_64-linux.go-tools":{"pname":"go-tools","version":"1","description":"Developer tools"},
+                "legacyPackages.x86_64-linux.go":{"pname":"go","version":"1","description":"Compiler"}
+            }"#,
+            "go",
+        )
+        .unwrap();
+
+        assert_eq!(
+            hits.iter()
+                .map(|hit| hit.pname.as_str())
+                .collect::<Vec<_>>(),
+            ["go", "go-tools", "air"]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires nix and a configured nixpkgs registry"]
+    async fn live_go_search_ranks_exact_package_first() {
+        let hits = search("nixpkgs", "go").await.expect("live nix search");
+
+        assert_eq!(hits.first().map(|hit| hit.pname.as_str()), Some("go"));
     }
 }

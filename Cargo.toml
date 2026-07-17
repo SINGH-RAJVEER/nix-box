@@ -33,3 +33,4 @@ tui-input = "0.10"
 clap = { version = "4.5", features = ["derive"] }
 directories = "5.0"
 futures = "0.3"
+libc = "0.2"

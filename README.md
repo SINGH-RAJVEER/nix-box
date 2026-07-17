@@ -75,6 +75,7 @@ Cargo workspace:
 | `d` / Delete       | uninstall selected (Installed tab)      |
 | `m`                | migrate selected external package       |
 | `M`                | migrate all migratable externals        |
+| `c`                | cancel active build (Building tab)      |
 | Tab / `l`          | next tab (Search → Installed → Build)   |
 | Shift-Tab / `h`    | previous tab                            |
 | Ctrl-T             | toggle home-manager / nixos target      |
