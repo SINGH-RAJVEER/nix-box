@@ -58,14 +58,22 @@ pub async fn search(channel: &str, query: &str) -> Result<Vec<SearchHit>> {
 
     let stdout = child.stdout.take().context("capturing nix search stdout")?;
     let stderr = child.stderr.take().context("capturing nix search stderr")?;
-    let (status, stdout, stderr) = tokio::join!(
-        child.wait(),
-        read_limited(stdout, MAX_SEARCH_OUTPUT_BYTES),
-        read_truncated(stderr, MAX_SEARCH_ERROR_BYTES),
-    );
-    let status = status.context("waiting for nix search")?;
-    let stdout = stdout?;
-    let stderr = stderr?;
+    let stderr_task = tokio::spawn(read_truncated(stderr, MAX_SEARCH_ERROR_BYTES));
+
+    let stdout = match read_limited(stdout, MAX_SEARCH_OUTPUT_BYTES).await {
+        Ok(stdout) => stdout,
+        Err(error) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ = stderr_task.await;
+            return Err(error);
+        }
+    };
+
+    let status = child.wait().await.context("waiting for nix search")?;
+    let stderr = stderr_task
+        .await
+        .context("joining nix search stderr reader")??;
 
     if !status.success() {
         let stderr = String::from_utf8_lossy(&stderr);
@@ -201,6 +209,17 @@ mod tests {
             .await
             .expect_err("payload should exceed limit");
         assert!(err.to_string().contains("exceeded"));
+    }
+
+    #[tokio::test]
+    async fn read_truncated_drains_bytes_beyond_limit() {
+        let bytes = b"abcdef".to_vec();
+        let mut reader = Cursor::new(bytes);
+
+        let out = read_truncated(&mut reader, 3).await.expect("read");
+
+        assert_eq!(out, b"abc");
+        assert_eq!(reader.position(), 6);
     }
 
     #[test]
