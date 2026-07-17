@@ -3,3 +3,5 @@
 AGENTS.md
 CLAUDE.md
 /.direnv
+/.devenv
+/.devenv.flake.nix
