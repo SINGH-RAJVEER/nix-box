@@ -31,6 +31,7 @@ struct RawHit {
 /// aren't always in the user's registry, so map known ones explicitly.
 fn resolve_channel(channel: &str) -> &str {
     match channel {
+        "nixpkgs" | "nixpkgs-26.05" => "github:NixOS/nixpkgs/nixos-26.05",
         "nixpkgs-unstable" => "github:NixOS/nixpkgs/nixos-unstable",
         other => other,
     }
@@ -266,7 +267,14 @@ mod tests {
             resolve_channel("nixpkgs-unstable"),
             "github:NixOS/nixpkgs/nixos-unstable"
         );
-        assert_eq!(resolve_channel("nixpkgs"), "nixpkgs");
+        assert_eq!(
+            resolve_channel("nixpkgs-26.05"),
+            "github:NixOS/nixpkgs/nixos-26.05"
+        );
+        assert_eq!(
+            resolve_channel("nixpkgs"),
+            "github:NixOS/nixpkgs/nixos-26.05"
+        );
         assert_eq!(resolve_channel("github:owner/repo"), "github:owner/repo");
     }
 

@@ -4,14 +4,15 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, List, ListItem, ListState};
 
 use super::titled_panel;
-use crate::app::{App, CHANNELS};
+use crate::app::{App, CHANNELS, INPUT_MODES, SettingsPage, TARGETS};
 use crate::theme;
 
-pub(super) fn draw_theme_popup(f: &mut Frame, app: &App) {
+pub(super) fn draw_settings_popup(f: &mut Frame, app: &App) {
     let t = app.theme();
     let area = f.area();
-    let popup_width: u16 = 36;
-    let popup_height: u16 = theme::ALL.len() as u16 + 2;
+    let popup_width: u16 = 42;
+    let (title, labels, selected) = settings_content(app);
+    let popup_height = labels.len() as u16 + 2;
     let x = area.x + area.width.saturating_sub(popup_width) / 2;
     let y = area.y + area.height.saturating_sub(popup_height) / 2;
     let popup_area = Rect::new(
@@ -23,71 +24,74 @@ pub(super) fn draw_theme_popup(f: &mut Frame, app: &App) {
 
     f.render_widget(Clear, popup_area);
 
-    let items: Vec<ListItem> = theme::ALL
-        .iter()
-        .enumerate()
-        .map(|(i, th)| {
-            let check = if i == app.theme_index { "  ✓" } else { "" };
-            ListItem::new(Line::from(Span::styled(
-                format!("  {}{}", th.name, check),
-                t.name_style(),
-            )))
-        })
+    let items: Vec<ListItem> = labels
+        .into_iter()
+        .map(|label| ListItem::new(Line::from(Span::styled(label, t.name_style()))))
         .collect();
 
     let list = List::new(items)
-        .block(titled_panel(
-            t,
-            Span::styled(" Select Theme ", t.title_style()),
-        ))
+        .block(titled_panel(t, Span::styled(title, t.title_style())))
         .highlight_style(t.selection_style())
         .highlight_symbol("❯");
 
     let mut state = ListState::default();
-    state.select(Some(app.theme_cursor));
+    state.select(Some(selected));
     f.render_stateful_widget(list, popup_area, &mut state);
 }
 
-pub(super) fn draw_channel_popup(f: &mut Frame, app: &App) {
-    let t = app.theme();
-    let area = f.area();
-    let popup_width: u16 = 36;
-    let popup_height: u16 = CHANNELS.len() as u16 + 2;
-    let x = area.x + area.width.saturating_sub(popup_width) / 2;
-    let y = area.y + area.height.saturating_sub(popup_height) / 2;
-    let popup_area = Rect::new(
-        x,
-        y,
-        popup_width.min(area.width),
-        popup_height.min(area.height),
-    );
+fn settings_content(app: &App) -> (&'static str, Vec<String>, usize) {
+    let selected = app.settings_cursor;
+    match app.settings_page {
+        SettingsPage::Main => (
+            " Settings ",
+            vec![
+                format!(
+                    "  {:<12} {}  ›",
+                    "Input mode",
+                    app.config.input_mode.label()
+                ),
+                format!("  {:<12} {}  ›", "Theme", theme::ALL[app.theme_index].name),
+                format!("  {:<12} {}  ›", "Target", app.config.target.label()),
+                format!("  {:<12} {}  ›", "Channel", app.config.channel),
+            ],
+            selected,
+        ),
+        SettingsPage::InputMode => (
+            " Input Mode ",
+            INPUT_MODES
+                .iter()
+                .map(|mode| option_label(mode.label(), *mode == app.config.input_mode))
+                .collect(),
+            selected,
+        ),
+        SettingsPage::Theme => (
+            " Theme ",
+            theme::ALL
+                .iter()
+                .enumerate()
+                .map(|(index, value)| option_label(value.name, index == app.theme_index))
+                .collect(),
+            selected,
+        ),
+        SettingsPage::Target => (
+            " Target ",
+            TARGETS
+                .iter()
+                .map(|target| option_label(target.label(), *target == app.config.target))
+                .collect(),
+            selected,
+        ),
+        SettingsPage::Channel => (
+            " Channel ",
+            CHANNELS
+                .iter()
+                .map(|channel| option_label(channel, *channel == app.config.channel))
+                .collect(),
+            selected,
+        ),
+    }
+}
 
-    f.render_widget(Clear, popup_area);
-
-    let items: Vec<ListItem> = CHANNELS
-        .iter()
-        .map(|ch| {
-            let check = if *ch == app.config.channel {
-                "  ✓"
-            } else {
-                ""
-            };
-            ListItem::new(Line::from(Span::styled(
-                format!("  {}{}", ch, check),
-                t.name_style(),
-            )))
-        })
-        .collect();
-
-    let list = List::new(items)
-        .block(titled_panel(
-            t,
-            Span::styled(" Select Channel ", t.title_style()),
-        ))
-        .highlight_style(t.selection_style())
-        .highlight_symbol("❯");
-
-    let mut state = ListState::default();
-    state.select(Some(app.channel_cursor));
-    f.render_stateful_widget(list, popup_area, &mut state);
+fn option_label(label: &str, selected: bool) -> String {
+    format!("  {}{}", label, if selected { "  ✓" } else { "" })
 }

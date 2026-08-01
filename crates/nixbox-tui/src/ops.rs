@@ -483,11 +483,11 @@ pub(crate) fn schedule_search(app: &mut App, tx: mpsc::Sender<AppEvent>) {
 mod tests {
     use super::*;
     use crate::app::App;
+    use crate::vim::VimInput;
     use nixbox_config::Config;
     use nixbox_nix::{manifest::Manifest, search::SearchHit};
     use tokio::sync::{mpsc, oneshot};
     use tokio::time::timeout;
-    use tui_input::Input;
 
     fn hit(name: &str) -> SearchHit {
         SearchHit {
@@ -511,7 +511,7 @@ mod tests {
     async fn empty_query_clears_results_and_does_not_spawn_search() {
         let (tx, _rx) = mpsc::channel(1);
         let mut app = test_app();
-        app.input = Input::new(String::new());
+        app.input = VimInput::new(String::new());
         app.results = vec![hit("ripgrep")];
         app.selected = 4;
         app.searching = true;
@@ -543,7 +543,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel(1);
         let (dropped_tx, dropped_rx) = oneshot::channel();
         let mut app = test_app();
-        app.input = Input::new("ripgrep".into());
+        app.input = VimInput::new("ripgrep".into());
         app.search_task = Some(tokio::spawn(async move {
             let _guard = NotifyOnDrop(Some(dropped_tx));
             std::future::pending::<()>().await;
