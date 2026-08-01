@@ -13,7 +13,7 @@ rustPlatform.buildRustPackage rec {
 
   meta = with lib; {
     description = "TUI package manager for NixOS that wires selections into your flake + home-manager config";
-    homepage = "https://github.com/SINGH-RAJVEER/nix-box";
+    homepage = "https://github.com/SINGH-RAJVEER/nixbox";
     license = licenses.asl20;
     maintainers = with maintainers; [ ];
     mainProgram = "nixbox";
