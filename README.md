@@ -63,21 +63,24 @@ Cargo workspace:
 - `crates/nixbox` — binary entrypoint
 - `crates/nixbox-tui` — ratatui app, search / installed / build views
 - `crates/nixbox-nix` — `nix search` wrapper, managed-file writer, import inserter, rebuild runner
-- `crates/nixbox-config` — persisted user settings (channel, target, theme, path overrides)
+- `crates/nixbox-config` — persisted user settings (channel, target, theme, input mode, path overrides)
 
 ## Keys
 
-| key                | action                                  |
-| ------------------ | --------------------------------------- |
-| type / `/` / `i`   | enter search                            |
-| `↑` `↓` / `k` `j`  | move selection                          |
-| Enter              | install selected package                |
-| `d` / Delete       | uninstall selected (Installed tab)      |
-| `m`                | migrate selected external package       |
-| `M`                | migrate all migratable externals        |
-| `c`                | cancel active build (Building tab)      |
-| Tab / `l`          | next tab (Search → Installed → Build)   |
-| Shift-Tab / `h`    | previous tab                            |
-| Ctrl-T             | toggle home-manager / nixos target      |
-| Ctrl-N             | cycle theme                             |
-| Esc / Ctrl-C       | quit                                    |
+| key                   | action                                      |
+| --------------------- | ------------------------------------------- |
+| `/` / `i` / `a`       | enter insert mode in a search bar           |
+| `v`                   | enter visual mode in a search bar           |
+| `h` `l` / `b` `w`     | move by character / word                    |
+| `0` / `$`             | move to start / end                          |
+| `x` / `D`             | delete character / to end                   |
+| `d` / `x` / `c`       | delete or change a visual selection         |
+| `↑` `↓` / `k` `j`     | move package selection                      |
+| Enter                 | install selected package                    |
+| `d` / Delete          | uninstall selected (Installed tab)          |
+| `m` / `M`             | migrate selected / all external packages    |
+| `c`                   | cancel active build (Building tab)          |
+| Tab                   | next tab (Search → Installed → Build)       |
+| Shift-Tab             | previous tab                                |
+| Ctrl-S                | open settings                               |
+| Esc / Ctrl-C          | return to normal mode / quit                |

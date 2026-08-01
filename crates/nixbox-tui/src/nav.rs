@@ -1,7 +1,6 @@
-use nixbox_config::Target;
+use nixbox_config::InputMode;
 
-use crate::app::{App, CHANNELS, Mode, SearchInputMode, Tab};
-use crate::theme;
+use crate::app::{App, Mode, SettingsPage, Tab};
 
 pub(crate) fn move_selection(app: &mut App, delta: i32) {
     if app.results.is_empty() {
@@ -37,38 +36,19 @@ pub(crate) fn cycle_tab_back(app: &mut App) {
 
 pub(crate) fn set_tab(app: &mut App, tab: Tab) {
     app.tab = tab;
-    match tab {
-        Tab::Search => app.search_input_mode = SearchInputMode::Normal,
-        Tab::Installed => app.installed_input_mode = SearchInputMode::Normal,
-        _ => {}
+    if app.config.input_mode == InputMode::Vim {
+        match tab {
+            Tab::Search => app.input.enter_normal(),
+            Tab::Installed => app.installed_input.enter_normal(),
+            _ => {}
+        }
     }
     app.status = format!("{} tab", tab.label());
 }
 
-pub(crate) fn toggle_target(app: &mut App) {
-    app.config.target = match app.config.target {
-        Target::HomeManager => Target::NixosSystem,
-        Target::NixosSystem => Target::HomeManager,
-    };
-    let _ = app.config.save();
-    app.status = format!(
-        "Install target switched to {} (existing entries unchanged).",
-        app.config.target.label()
-    );
-}
-
-pub(crate) fn cycle_theme(app: &mut App) {
-    app.theme_cursor = app.theme_index;
-    app.mode = Mode::ThemeSelect;
-    let _ = theme::ALL; // ensure theme module is used
-    app.status = "↑/↓ preview  ·  Enter confirm  ·  Esc cancel".into();
-}
-
-pub(crate) fn open_channel_edit(app: &mut App) {
-    app.channel_cursor = CHANNELS
-        .iter()
-        .position(|c| *c == app.config.channel)
-        .unwrap_or(0);
-    app.mode = Mode::ChannelEdit;
-    app.status = "j/k navigate  ↵ confirm  esc cancel".into();
+pub(crate) fn open_settings(app: &mut App) {
+    app.settings_page = SettingsPage::Main;
+    app.settings_cursor = 0;
+    app.mode = Mode::SettingsSelect;
+    app.status = "↑/↓ select  ·  Enter open  ·  Esc close".into();
 }

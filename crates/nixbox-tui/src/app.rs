@@ -3,13 +3,14 @@ use std::io;
 use std::time::Duration;
 
 use anyhow::Result;
+use crossterm::cursor::SetCursorStyle;
 use crossterm::event::EventStream;
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use futures::StreamExt;
-use nixbox_config::{Config, Target};
+use nixbox_config::{Config, DEFAULT_CHANNEL, InputMode, Target};
 use nixbox_nix::{
     Manifest,
     build::BuildEvent,
@@ -19,26 +20,35 @@ use nixbox_nix::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use serde::{Deserialize, Serialize};
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
 };
-use tui_input::Input;
-
-use serde::{Deserialize, Serialize};
 
 use crate::handlers::{handle_app_event, handle_terminal_event};
 use crate::state::{self, InProgress, PersistedState};
 use crate::theme;
 use crate::ui;
+use crate::vim::VimInput;
 
-pub(crate) const CHANNELS: &[&str] = &["nixpkgs", "nixpkgs-unstable"];
+pub(crate) const CHANNELS: &[&str] = &[DEFAULT_CHANNEL, "nixpkgs-unstable"];
+pub(crate) const INPUT_MODES: &[InputMode] = &[InputMode::Vim, InputMode::Normal];
+pub(crate) const TARGETS: &[Target] = &[Target::HomeManager, Target::NixosSystem];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Mode {
     Browsing,
-    ThemeSelect,
-    ChannelEdit,
+    SettingsSelect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SettingsPage {
+    Main,
+    InputMode,
+    Theme,
+    Target,
+    Channel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,12 +78,6 @@ impl QueuedOp {
             },
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SearchInputMode {
-    Insert,
-    Normal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,11 +130,10 @@ pub(crate) struct App {
     /// Packages found declared directly in the user's main config files
     /// (both home.nix and configuration.nix), tagged with their scope.
     pub(crate) external_packages: Vec<ExternalPackage>,
-    pub(crate) input: Input,
+    pub(crate) input: VimInput,
     pub(crate) results: Vec<SearchHit>,
     pub(crate) selected: usize,
-    pub(crate) installed_input: Input,
-    pub(crate) installed_input_mode: SearchInputMode,
+    pub(crate) installed_input: VimInput,
     pub(crate) installed_selected: usize,
     pub(crate) status: String,
     pub(crate) mode: Mode,
@@ -140,8 +143,8 @@ pub(crate) struct App {
     pub(crate) latest_query: String,
     pub(crate) should_quit: bool,
     pub(crate) theme_index: usize,
-    pub(crate) theme_cursor: usize,
-    pub(crate) search_input_mode: SearchInputMode,
+    pub(crate) settings_page: SettingsPage,
+    pub(crate) settings_cursor: usize,
     pub(crate) searching: bool,
     pub(crate) search_task: Option<JoinHandle<()>>,
     pub(crate) build_in_progress: bool,
@@ -156,7 +159,6 @@ pub(crate) struct App {
     /// Error message from the previous run that was never acknowledged.
     /// Survives across launches until the next successful build clears it.
     pub(crate) last_error: Option<String>,
-    pub(crate) channel_cursor: usize,
 }
 
 impl App {
@@ -177,16 +179,22 @@ impl App {
         } else {
             format!("{} managed  ·  {} external.", managed, external)
         };
+        let input_mode = config.input_mode;
+        let mut input = VimInput::default();
+        let mut installed_input = VimInput::default();
+        if input_mode == InputMode::Normal {
+            input.enter_insert_before();
+            installed_input.enter_insert_before();
+        }
         Self {
             config,
             home_manifest,
             nixos_manifest,
             external_packages,
-            input: Input::default(),
+            input,
             results: Vec::new(),
             selected: 0,
-            installed_input: Input::default(),
-            installed_input_mode: SearchInputMode::Normal,
+            installed_input,
             installed_selected: 0,
             status,
             mode: Mode::Browsing,
@@ -196,8 +204,8 @@ impl App {
             latest_query: String::new(),
             should_quit: false,
             theme_index,
-            theme_cursor: theme_index,
-            search_input_mode: SearchInputMode::Normal,
+            settings_page: SettingsPage::Main,
+            settings_cursor: 0,
             searching: false,
             search_task: None,
             build_in_progress: false,
@@ -207,7 +215,6 @@ impl App {
             current_op_label: None,
             in_progress_op: None,
             last_error: None,
-            channel_cursor: 0,
         }
     }
 
@@ -231,12 +238,28 @@ impl App {
     }
 
     pub(crate) fn theme(&self) -> &'static theme::Theme {
-        let idx = if matches!(self.mode, Mode::ThemeSelect) {
-            self.theme_cursor
+        let idx = if matches!(self.mode, Mode::SettingsSelect)
+            && self.settings_page == SettingsPage::Theme
+        {
+            self.settings_cursor
         } else {
             self.theme_index
         };
         &theme::ALL[idx]
+    }
+
+    pub(crate) fn apply_input_mode(&mut self, mode: InputMode) {
+        self.config.input_mode = mode;
+        match mode {
+            InputMode::Vim => {
+                self.input.enter_normal();
+                self.installed_input.enter_normal();
+            }
+            InputMode::Normal => {
+                self.input.enter_insert_before();
+                self.installed_input.enter_insert_before();
+            }
+        }
     }
 
     pub(crate) fn manifest_for(&self, scope: Target) -> &Manifest {
@@ -391,7 +414,7 @@ pub async fn run() -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, SetCursorStyle::BlinkingBar)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -405,7 +428,11 @@ pub async fn run() -> Result<()> {
     .await;
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        SetCursorStyle::DefaultUserShape,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     result
@@ -448,6 +475,24 @@ mod tests {
         assert_eq!(app.manifest_for(Target::HomeManager).packages.len(), 0);
         assert_eq!(app.manifest_for(Target::NixosSystem).packages.len(), 0);
         assert_eq!(app.visible_tabs(), vec![Tab::Search, Tab::Installed]);
+    }
+
+    #[test]
+    fn normal_input_preference_starts_both_inputs_in_insert_mode() {
+        let app = App::new(
+            Config {
+                input_mode: InputMode::Normal,
+                ..Config::default()
+            },
+            Manifest::default(),
+            Manifest::default(),
+            Vec::new(),
+        );
+
+        assert_eq!(app.input.mode(), crate::vim::VimMode::Insert);
+        assert_eq!(app.installed_input.mode(), crate::vim::VimMode::Insert);
+        assert_eq!(app.settings_page, SettingsPage::Main);
+        assert_eq!(app.settings_cursor, 0);
     }
 
     #[test]

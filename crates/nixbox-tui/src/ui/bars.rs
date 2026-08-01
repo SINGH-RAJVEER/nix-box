@@ -1,3 +1,4 @@
+use nixbox_config::InputMode;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -5,25 +6,95 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use super::{SPINNER, panel};
-use crate::app::{App, Mode, SearchInputMode, Tab};
+use crate::app::{App, Mode, SettingsPage, Tab};
+use crate::vim::VimMode;
 
 pub(super) fn draw_search_bar(f: &mut Frame, area: Rect, app: &App) {
     let t = app.theme();
     let dim = Style::default().add_modifier(Modifier::DIM);
-    let (mode, value) = match app.tab {
-        Tab::Installed => (app.installed_input_mode, app.installed_input.value()),
-        _ => (app.search_input_mode, app.input.value()),
+    let (input, placeholder) = match app.tab {
+        Tab::Installed => (&app.installed_input, "search installed applications"),
+        _ => (&app.input, "search nixpkgs"),
     };
-    let (mode_label, mode_style) = match mode {
-        SearchInputMode::Insert => (" INSERT ", t.title_style()),
-        SearchInputMode::Normal => (" NORMAL ", dim),
+    let (mode_label, mode_style) = match (app.config.input_mode, input.mode()) {
+        (InputMode::Normal, _) => (" NORMAL ", t.title_style()),
+        (InputMode::Vim, VimMode::Insert) => (" INSERT ", t.title_style()),
+        (InputMode::Vim, VimMode::Normal) => (" NORMAL ", dim),
+        (InputMode::Vim, VimMode::Visual) => (" VISUAL ", t.selection_style()),
     };
-    let line = Line::from(vec![
-        Span::styled(mode_label, mode_style),
-        Span::styled("  /  ", dim),
-        Span::raw(value.to_string()),
-    ]);
-    f.render_widget(Paragraph::new(line).block(panel(t)), area);
+
+    f.render_widget(panel(t), area);
+    let inner = Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    const PREFIX_WIDTH: u16 = 10;
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(PREFIX_WIDTH.min(inner.width)),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(mode_label, mode_style),
+            Span::raw("  "),
+        ])),
+        chunks[0],
+    );
+
+    if chunks[1].width == 0 {
+        return;
+    }
+
+    let selection = input.selection_range();
+    let mut value_spans: Vec<Span> = input
+        .value()
+        .chars()
+        .enumerate()
+        .map(|(index, ch)| {
+            let selected = match input.mode() {
+                VimMode::Normal => index == input.cursor(),
+                VimMode::Visual => {
+                    selection.is_some_and(|(start, end)| (start..=end).contains(&index))
+                }
+                VimMode::Insert => false,
+            };
+            Span::styled(
+                ch.to_string(),
+                if selected {
+                    t.selection_style()
+                } else {
+                    Style::default()
+                },
+            )
+        })
+        .collect();
+    if input.value().is_empty() {
+        if input.mode() == VimMode::Normal {
+            value_spans.push(Span::styled(" ", t.selection_style()));
+        } else {
+            value_spans.push(Span::styled(placeholder, dim));
+        }
+    }
+
+    let width = chunks[1].width as usize;
+    let scroll = input.visual_scroll(width.saturating_sub(1));
+    f.render_widget(
+        Paragraph::new(Line::from(value_spans)).scroll((0, scroll as u16)),
+        chunks[1],
+    );
+
+    if input.mode() == VimMode::Insert {
+        let cursor_x = chunks[1]
+            .x
+            .saturating_add(input.visual_cursor().saturating_sub(scroll) as u16)
+            .min(chunks[1].right().saturating_sub(1));
+        f.set_cursor_position((cursor_x, chunks[1].y));
+    }
 }
 
 pub(super) fn draw_tab_strip(f: &mut Frame, area: Rect, app: &App) {
@@ -98,26 +169,58 @@ pub(super) fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
 
 fn context_keys(app: &App) -> &'static str {
     match app.mode {
-        Mode::ThemeSelect => "j/k preview  ↵ confirm  esc cancel",
-        Mode::ChannelEdit => "↵ confirm  esc cancel",
+        Mode::SettingsSelect
+            if app.settings_page == SettingsPage::Main
+                && app.config.input_mode == InputMode::Normal =>
+        {
+            "↑↓ select  ↵ open  esc close"
+        }
+        Mode::SettingsSelect if app.config.input_mode == InputMode::Normal => {
+            "↑↓ select  ↵ confirm  esc back"
+        }
+        Mode::SettingsSelect if app.settings_page == SettingsPage::Main => {
+            "↑↓/j/k select  ↵ open  esc close"
+        }
+        Mode::SettingsSelect => "↑↓/j/k select  ↵ confirm  esc back",
+        Mode::Browsing if app.config.input_mode == InputMode::Normal => match app.tab {
+            Tab::Search => {
+                "type  ←→ cursor  ↑↓ results  tab/shift-tab tabs  ↵ install  ctrl-s settings"
+            }
+            Tab::Installed => {
+                "type to filter  ←→ cursor  ↑↓ results  tab/shift-tab tabs  ctrl-s settings"
+            }
+            Tab::Building if app.build_in_progress => {
+                "c cancel build  tab/shift-tab tabs  ctrl-s settings  esc quit"
+            }
+            Tab::Building | Tab::Queue => "tab/shift-tab tabs  ctrl-s settings  esc quit",
+        },
         Mode::Browsing => match app.tab {
-            Tab::Search => match app.search_input_mode {
-                SearchInputMode::Insert => {
-                    "↑↓ nav  ↵ install  ^g target  ^n channel  tab switch  esc normal"
+            Tab::Search => match app.input.mode() {
+                VimMode::Insert => {
+                    "type  ←→ cursor  ↑↓ results  tab/shift-tab tabs  esc normal  ctrl-s settings"
                 }
-                SearchInputMode::Normal => {
-                    "j/k nav  h/l tabs  ↵ install  i insert  ^g target  ^n channel  esc quit"
+                VimMode::Normal => {
+                    "h/l/←→ cursor  v visual  i/a insert  tab/shift-tab tabs  ctrl-s settings"
                 }
-            },
-            Tab::Installed => match app.installed_input_mode {
-                SearchInputMode::Insert => "↑↓ nav  tab switch  esc normal",
-                SearchInputMode::Normal => {
-                    "j/k nav  h/l tabs  d uninstall  m migrate  M migrate all  i filter  esc quit"
+                VimMode::Visual => {
+                    "h/l/w/b select  d/x delete  c change  esc normal  ctrl-s settings"
                 }
             },
-            Tab::Building if app.build_in_progress => "c cancel build  h/l tabs  esc quit",
-            Tab::Building => "h/l tabs  esc quit",
-            Tab::Queue => "h/l tabs  esc quit",
+            Tab::Installed => match app.installed_input.mode() {
+                VimMode::Insert => {
+                    "type to filter  ←→ cursor  ↑↓ results  tab/shift-tab tabs  ctrl-s settings"
+                }
+                VimMode::Normal => {
+                    "h/l cursor  i/a filter  tab/shift-tab tabs  d uninstall  ctrl-s settings"
+                }
+                VimMode::Visual => {
+                    "h/l/w/b select  d/x delete  c change  esc normal  ctrl-s settings"
+                }
+            },
+            Tab::Building if app.build_in_progress => {
+                "c cancel build  tab/shift-tab tabs  ctrl-s settings  esc quit"
+            }
+            Tab::Building | Tab::Queue => "tab/shift-tab tabs  ctrl-s settings  esc quit",
         },
     }
 }

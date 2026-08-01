@@ -67,10 +67,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App) {
 
     bars::draw_footer(f, footer_area, app);
 
-    if matches!(app.mode, Mode::ThemeSelect) {
-        popups::draw_theme_popup(f, app);
-    }
-    if matches!(app.mode, Mode::ChannelEdit) {
-        popups::draw_channel_popup(f, app);
+    if matches!(app.mode, Mode::SettingsSelect) {
+        popups::draw_settings_popup(f, app);
     }
 }
