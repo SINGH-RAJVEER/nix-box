@@ -74,7 +74,7 @@ pub(crate) fn state_path() -> Result<PathBuf> {
 
 /// Pulls any saved state from disk into `app` and kicks off whatever work
 /// remains: an interrupted rebuild is re-launched first, otherwise pending
-/// queued ops start draining immediately.
+/// queued operations for each rebuild scope are batched and drained.
 pub(crate) fn restore(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
     let Some(saved) = PersistedState::load() else {
         return;
