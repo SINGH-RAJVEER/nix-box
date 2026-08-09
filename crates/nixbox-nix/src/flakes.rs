@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::{fs, process::Stdio};
 
@@ -58,6 +59,22 @@ struct SearchRepository {
 }
 
 #[derive(Deserialize)]
+struct RepositorySearchResponse {
+    items: Vec<RepositorySearchItem>,
+}
+
+#[derive(Deserialize)]
+struct RepositorySearchItem {
+    full_name: String,
+    stargazers_count: u64,
+}
+
+struct RankedHit {
+    score: u64,
+    hit: FlakeHit,
+}
+
+#[derive(Deserialize)]
 struct Repository {
     #[serde(default)]
     description: Option<String>,
@@ -76,11 +93,88 @@ struct Repository {
 /// Authentication is delegated to the user's existing `gh auth login` session.
 pub async fn search_flakes(query: &str) -> Result<Vec<FlakeHit>> {
     let query = query.trim();
-    let query = if query.is_empty() {
-        "filename:flake.nix path:/".to_string()
-    } else {
-        format!("{query} in:file filename:flake.nix path:/")
-    };
+    let (code_items, repositories) =
+        tokio::try_join!(search_code(query), search_repositories(query))?;
+    let mut direct = Vec::new();
+    let mut candidates: BTreeMap<String, u64> = BTreeMap::new();
+
+    for item in code_items {
+        let name_score = repository_name_score(query, &item.repository.full_name);
+        direct.push(RankedHit {
+            score: 100 + name_score,
+            hit: FlakeHit {
+                repo: item.repository.full_name,
+                repo_url: item.repository.html_url,
+                path: item.path,
+                match_fragment: item
+                    .text_matches
+                    .first()
+                    .map(|matched| compact_fragment(&matched.fragment)),
+                content_url: item
+                    .url
+                    .strip_prefix("https://api.github.com/")
+                    .unwrap_or(&item.url)
+                    .to_string(),
+            },
+        });
+        for reference in item
+            .text_matches
+            .iter()
+            .flat_map(|matched| github_references(&matched.fragment))
+        {
+            let score = repository_name_score(query, &reference);
+            if score > 0 {
+                candidates
+                    .entry(reference)
+                    .and_modify(|existing| *existing = (*existing).max(1_000 + score))
+                    .or_insert(1_000 + score);
+            }
+        }
+    }
+
+    for repository in repositories {
+        let score = repository_name_score(query, &repository.full_name);
+        candidates
+            .entry(repository.full_name)
+            .and_modify(|existing| *existing = (*existing).max(500 + score))
+            .or_insert(500 + score + repository.stargazers_count.min(10_000) / 1_000);
+    }
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for (repo, score) in candidates {
+        tasks.spawn(async move {
+            root_flake_hit(repo)
+                .await
+                .map(|hit| RankedHit { score, hit })
+        });
+    }
+    while let Some(result) = tasks.join_next().await {
+        if let Ok(Ok(hit)) = result {
+            direct.push(hit);
+        }
+    }
+
+    let mut deduped: BTreeMap<String, RankedHit> = BTreeMap::new();
+    for candidate in direct {
+        match deduped.get(&candidate.hit.repo) {
+            Some(existing) if existing.score >= candidate.score => {}
+            _ => {
+                deduped.insert(candidate.hit.repo.clone(), candidate);
+            }
+        }
+    }
+    let mut ranked: Vec<RankedHit> = deduped.into_values().collect();
+    ranked.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| a.hit.repo.cmp(&b.hit.repo))
+    });
+    ranked.truncate(MAX_FLAKE_RESULTS);
+    Ok(ranked.into_iter().map(|candidate| candidate.hit).collect())
+}
+
+async fn search_code(query: &str) -> Result<Vec<CodeSearchItem>> {
+    let query = format!("{query} in:file filename:flake.nix path:/");
     let raw = gh_api(vec![
         "--method".into(),
         "GET".into(),
@@ -92,29 +186,97 @@ pub async fn search_flakes(query: &str) -> Result<Vec<FlakeHit>> {
         "-f".into(),
         format!("q={query}"),
         "-f".into(),
-        format!("per_page={MAX_FLAKE_RESULTS}"),
+        "per_page=20".into(),
     ])
     .await?;
     let response: CodeSearchResponse =
         serde_json::from_slice(&raw).context("parsing GitHub code search response")?;
-    Ok(response
-        .items
-        .into_iter()
-        .map(|item| FlakeHit {
-            repo: item.repository.full_name,
-            repo_url: item.repository.html_url,
-            path: item.path,
-            match_fragment: item
-                .text_matches
-                .first()
-                .map(|matched| compact_fragment(&matched.fragment)),
-            content_url: item
-                .url
-                .strip_prefix("https://api.github.com/")
-                .unwrap_or(&item.url)
-                .to_string(),
-        })
-        .collect())
+    Ok(response.items)
+}
+
+async fn search_repositories(query: &str) -> Result<Vec<RepositorySearchItem>> {
+    let raw = gh_api(vec![
+        "--method".into(),
+        "GET".into(),
+        "-H".into(),
+        "Accept: application/vnd.github+json".into(),
+        "search/repositories".into(),
+        "-f".into(),
+        format!("q={query} in:name,description,topics archived:false"),
+        "-f".into(),
+        "per_page=10".into(),
+    ])
+    .await?;
+    let response: RepositorySearchResponse =
+        serde_json::from_slice(&raw).context("parsing GitHub repository search response")?;
+    Ok(response.items)
+}
+
+async fn root_flake_hit(repo: String) -> Result<FlakeHit> {
+    gh_api(vec![
+        "-H".into(),
+        "Accept: application/vnd.github.raw+json".into(),
+        format!("repos/{repo}/contents/flake.nix"),
+    ])
+    .await?;
+    let content_url = format!("repos/{repo}/contents/flake.nix");
+    Ok(FlakeHit {
+        repo_url: format!("https://github.com/{repo}"),
+        repo,
+        path: "flake.nix".into(),
+        match_fragment: None,
+        content_url,
+    })
+}
+
+fn repository_name_score(query: &str, repo: &str) -> u64 {
+    let query = normalize(query);
+    let name = repo.rsplit('/').next().map(normalize).unwrap_or_default();
+    if query.is_empty() || name.is_empty() {
+        0
+    } else if name == query {
+        500
+    } else if name.starts_with(&query) {
+        400
+    } else if name.contains(&query) {
+        300
+    } else {
+        0
+    }
+}
+
+fn normalize(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn github_references(fragment: &str) -> Vec<String> {
+    let mut references = Vec::new();
+    let mut remaining = fragment;
+    while let Some(start) = remaining.find("github:") {
+        remaining = &remaining[start + "github:".len()..];
+        let path: String = remaining
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/'))
+            .collect();
+        let mut segments = path.split('/');
+        let Some(owner) = segments.next() else {
+            continue;
+        };
+        let Some(repo) = segments.next() else {
+            continue;
+        };
+        if !owner.is_empty() && !repo.is_empty() {
+            let reference = format!("{owner}/{repo}");
+            if !references.contains(&reference) {
+                references.push(reference);
+            }
+        }
+    }
+    references
 }
 
 fn compact_fragment(fragment: &str) -> String {
@@ -315,7 +477,10 @@ fn contains_identifier(source: &str, name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_inputs, classify_outputs, compact_fragment, ensure_flake_input};
+    use super::{
+        classify_inputs, classify_outputs, compact_fragment, ensure_flake_input, github_references,
+        repository_name_score,
+    };
     use std::fs;
 
     #[test]
@@ -323,6 +488,24 @@ mod tests {
         assert_eq!(
             compact_fragment("  inputs.nixpkgs.url =\n  \"github:NixOS/nixpkgs\";  "),
             "inputs.nixpkgs.url = \"github:NixOS/nixpkgs\";"
+        );
+    }
+
+    #[test]
+    fn extracts_upstream_github_references_without_branch_suffixes() {
+        assert_eq!(
+            github_references(
+                "zen.url = \"github:0xc000022070/zen-browser-flake/beta\"; other = \"github:NixOS/nixpkgs\";"
+            ),
+            ["0xc000022070/zen-browser-flake", "NixOS/nixpkgs"]
+        );
+    }
+
+    #[test]
+    fn ranks_canonical_repository_names_above_consumer_repositories() {
+        assert!(
+            repository_name_score("zen-browser", "0xc000022070/zen-browser-flake")
+                > repository_name_score("zen-browser", "Baitinq/nixos-config")
         );
     }
 
@@ -379,5 +562,16 @@ mod tests {
         assert!(updated.contains("\"owner/module\".url = \"github:owner/module\";"));
         assert!(updated.contains("extraSpecialArgs = { inherit inputs; };"));
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires authenticated gh access and consumes GitHub search quota"]
+    async fn live_zen_browser_search_promotes_the_upstream_flake() {
+        let hits = super::search_flakes("zen-browser").await.unwrap();
+
+        assert_eq!(
+            hits.first().map(|hit| hit.repo.as_str()),
+            Some("0xc000022070/zen-browser-flake")
+        );
     }
 }

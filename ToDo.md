@@ -1,2 +1,0 @@
-- add a cursor in the search box that accurately represents vim modes
-- add a flake browser
