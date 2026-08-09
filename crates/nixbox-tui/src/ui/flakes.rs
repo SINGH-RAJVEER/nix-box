@@ -88,7 +88,10 @@ fn draw_details(f: &mut Frame, area: Rect, app: &App) {
                 Line::from(Span::styled("Searches only root flake.nix files.", dim)),
                 Line::from(Span::styled("Results are not cloned or persisted.", dim)),
                 Line::raw(""),
-                Line::from(Span::styled("i  search    j/k  select", dim)),
+                Line::from(Span::styled(
+                    "i  search    j/k  select    Enter  install module",
+                    dim,
+                )),
             ])
             .block(block)
             .wrap(Wrap { trim: false }),

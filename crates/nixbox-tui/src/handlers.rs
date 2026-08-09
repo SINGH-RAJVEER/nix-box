@@ -11,8 +11,9 @@ use crate::nav::{
     open_settings,
 };
 use crate::ops::{
-    cancel_build, drain_queue, install_selected, migrate_all, migrate_selected,
-    schedule_flake_details, schedule_flake_search, schedule_search, uninstall_selected,
+    cancel_build, drain_queue, install_selected, install_selected_flake, migrate_all,
+    migrate_selected, schedule_flake_details, schedule_flake_search, schedule_search,
+    uninstall_selected,
 };
 use crate::theme;
 use crate::vim::VimMode;
@@ -104,6 +105,7 @@ pub(crate) async fn handle_terminal_event(
                     move_flake_selection(app, -1);
                     schedule_flake_details(app, tx.clone());
                 }
+                KeyCode::Enter => install_selected_flake(app, tx).await?,
                 _ => {
                     if app.flake_input.handle_insert_event(&CtEvent::Key(key)) {
                         schedule_flake_search(app, tx.clone());
@@ -197,6 +199,7 @@ pub(crate) async fn handle_terminal_event(
                     move_flake_selection(app, -1);
                     schedule_flake_details(app, tx.clone());
                 }
+                KeyCode::Enter => install_selected_flake(app, tx).await?,
                 _ => {
                     if app.flake_input.handle_insert_event(&CtEvent::Key(key)) {
                         schedule_flake_search(app, tx.clone());
@@ -229,6 +232,7 @@ pub(crate) async fn handle_terminal_event(
                         schedule_flake_search(app, tx.clone());
                     }
                 }
+                KeyCode::Enter => install_selected_flake(app, tx).await?,
                 KeyCode::Char('i') | KeyCode::Char('/') => app.flake_input.enter_insert_before(),
                 KeyCode::Char('a') => app.flake_input.enter_insert_after(),
                 KeyCode::Char('I') => app.flake_input.enter_insert_start(),

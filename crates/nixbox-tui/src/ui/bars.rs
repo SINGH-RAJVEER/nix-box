@@ -187,7 +187,7 @@ fn context_keys(app: &App) -> &'static str {
             Tab::Search => {
                 "type  ←→ cursor  ↑↓ results  tab/shift-tab tabs  ↵ install  ctrl-s settings"
             }
-            Tab::Flakes => "type  ←→ cursor  ↑↓ results  tab/shift-tab tabs  ctrl-s settings",
+            Tab::Flakes => "type  ←→ cursor  ↑↓ results  Enter install  tab/shift-tab tabs",
             Tab::Installed => {
                 "type to filter  ←→ cursor  ↑↓ results  tab/shift-tab tabs  ctrl-s settings"
             }
@@ -199,7 +199,7 @@ fn context_keys(app: &App) -> &'static str {
         Mode::Browsing => match app.tab {
             Tab::Search => match app.input.mode() {
                 VimMode::Insert => {
-                    "type  ←→ cursor  ↑↓ results  tab/shift-tab tabs  esc normal  ctrl-s settings"
+                    "type  ←→ cursor  ↑↓ results  Enter install  tab/shift-tab tabs  esc normal"
                 }
                 VimMode::Normal => {
                     "h/l/←→ cursor  v visual  i/a insert  tab/shift-tab tabs  ctrl-s settings"
@@ -213,7 +213,7 @@ fn context_keys(app: &App) -> &'static str {
                     "type  ←→ cursor  ↑↓ results  tab/shift-tab tabs  esc normal  ctrl-s settings"
                 }
                 VimMode::Normal => {
-                    "h/l/←→ cursor  v visual  i/a insert  j/k results  tab/shift-tab tabs"
+                    "h/l/←→ cursor  v visual  i/a insert  j/k results  Enter install"
                 }
                 VimMode::Visual => {
                     "h/l/w/b select  d/x delete  c change  esc normal  ctrl-s settings"

@@ -1,4 +1,5 @@
-use std::process::Stdio;
+use std::path::Path;
+use std::{fs, process::Stdio};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -156,6 +157,69 @@ pub async fn fetch_flake_details(hit: &FlakeHit) -> Result<FlakeDetails> {
     })
 }
 
+/// Adds a GitHub flake as a root input and makes `inputs` available to the
+/// selected configuration constructor's modules.
+pub fn ensure_flake_input(
+    flake_file: &Path,
+    repo: &str,
+    special_args: &str,
+    constructor: &str,
+) -> Result<()> {
+    let source = fs::read_to_string(flake_file)
+        .with_context(|| format!("reading {}", flake_file.display()))?;
+    if !source.contains("outputs = inputs@") {
+        bail!(
+            "{} must bind `inputs` in its outputs function before nixbox can import flake modules",
+            flake_file.display()
+        );
+    }
+
+    let mut updated = source;
+    let input = format!("\"{repo}\"");
+    if !updated.contains(&format!("{input}.url")) {
+        let inputs_pos = updated
+            .find("inputs = {")
+            .context("could not find an `inputs = { ... };` block")?;
+        let open = inputs_pos + "inputs = ".len();
+        let close = matching_brace(&updated, open)
+            .context("could not find the end of the flake inputs block")?;
+        updated.insert_str(close, &format!("  {input}.url = \"github:{repo}\";\n"));
+    }
+
+    if !updated.contains(special_args) {
+        let constructor_pos = updated
+            .find(constructor)
+            .with_context(|| format!("could not find `{constructor}`"))?;
+        let open = updated[constructor_pos..]
+            .find('{')
+            .map(|offset| constructor_pos + offset)
+            .context("could not find configuration arguments")?;
+        updated.insert_str(
+            open + 1,
+            &format!("\n    {special_args} = {{ inherit inputs; }};"),
+        );
+    }
+
+    fs::write(flake_file, updated).with_context(|| format!("writing {}", flake_file.display()))
+}
+
+fn matching_brace(source: &str, open: usize) -> Option<usize> {
+    let mut depth = 0;
+    for (offset, ch) in source[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 async fn gh_api(args: Vec<String>) -> Result<Vec<u8>> {
     let output = Command::new("gh")
         .arg("api")
@@ -251,7 +315,8 @@ fn contains_identifier(source: &str, name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_inputs, classify_outputs, compact_fragment};
+    use super::{classify_inputs, classify_outputs, compact_fragment, ensure_flake_input};
+    use std::fs;
 
     #[test]
     fn compacts_github_match_fragments_for_result_rows() {
@@ -288,5 +353,31 @@ mod tests {
                 "dev shells"
             ]
         );
+    }
+
+    #[test]
+    fn adds_input_and_home_manager_special_args() {
+        let dir = std::env::temp_dir().join(format!("nixbox-flake-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("flake.nix");
+        fs::write(
+            &file,
+            "{\n  inputs = { nixpkgs.url = \"github:NixOS/nixpkgs\"; };\n  outputs = inputs@{ self, nixpkgs, ... }: {\n    homeConfigurations.user = inputs.home-manager.lib.homeManagerConfiguration {\n      modules = [ ./home.nix ];\n    };\n  };\n}\n",
+        )
+        .unwrap();
+
+        ensure_flake_input(
+            &file,
+            "owner/module",
+            "extraSpecialArgs",
+            "homeManagerConfiguration",
+        )
+        .unwrap();
+
+        let updated = fs::read_to_string(&file).unwrap();
+        assert!(updated.contains("\"owner/module\".url = \"github:owner/module\";"));
+        assert!(updated.contains("extraSpecialArgs = { inherit inputs; };"));
+        let _ = fs::remove_dir_all(dir);
     }
 }

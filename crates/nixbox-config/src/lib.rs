@@ -117,6 +117,19 @@ impl Config {
         }
     }
 
+    /// Returns the generated module that imports flake modules for `target`.
+    pub fn flake_manifest_for(&self, target: Target) -> PathBuf {
+        match target {
+            Target::HomeManager => nixos_config_dir().join("nixbox-home-flakes.nix"),
+            Target::NixosSystem => nixos_config_dir().join("nixbox-system-flakes.nix"),
+        }
+    }
+
+    /// Returns the root flake that owns the inputs used by nixbox modules.
+    pub fn flake_file(&self) -> PathBuf {
+        nixos_config_dir().join("flake.nix")
+    }
+
     /// Returns the directory where nixbox keeps its generated nix files.
     pub fn home_manager_dir(&self) -> PathBuf {
         nixos_config_dir()

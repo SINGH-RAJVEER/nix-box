@@ -54,15 +54,30 @@ pub(crate) enum SettingsPage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum QueuedOp {
-    Install { hit: SearchHit, scope: Target },
-    Uninstall { name: String, scope: Target },
-    Migrate { names: Vec<String>, scope: Target },
+    Install {
+        hit: SearchHit,
+        scope: Target,
+    },
+    InstallFlake {
+        repo: String,
+        module: String,
+        scope: Target,
+    },
+    Uninstall {
+        name: String,
+        scope: Target,
+    },
+    Migrate {
+        names: Vec<String>,
+        scope: Target,
+    },
 }
 
 impl QueuedOp {
     pub(crate) fn scope(&self) -> Target {
         match self {
             QueuedOp::Install { scope, .. }
+            | QueuedOp::InstallFlake { scope, .. }
             | QueuedOp::Uninstall { scope, .. }
             | QueuedOp::Migrate { scope, .. } => *scope,
         }
@@ -72,6 +87,7 @@ impl QueuedOp {
         let tag = self.scope().tag();
         match self {
             QueuedOp::Install { hit, .. } => format!("install {} [{}]", hit.attr, tag),
+            QueuedOp::InstallFlake { repo, .. } => format!("install flake {} [{}]", repo, tag),
             QueuedOp::Uninstall { name, .. } => format!("remove {} [{}]", name, tag),
             QueuedOp::Migrate { names, .. } => match names.len() {
                 1 => format!("migrate {} [{}]", names[0], tag),
