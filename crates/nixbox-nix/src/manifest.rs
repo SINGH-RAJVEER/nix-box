@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -36,6 +36,17 @@ const MANIFEST_HEADER: &str = "# Managed by nixbox. Do not edit by hand.";
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Manifest {
     pub packages: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FlakeManifest {
+    pub modules: BTreeMap<String, String>,
+}
+
+impl FlakeManifest {
+    pub fn add(&mut self, input: String, module: String) -> bool {
+        self.modules.insert(input, module).is_none()
+    }
 }
 
 impl Manifest {
@@ -82,6 +93,67 @@ impl ManagedFile {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
+        fs::write(&self.path, content).with_context(|| format!("writing {}", self.path.display()))
+    }
+}
+
+pub struct ManagedFlakeFile {
+    path: PathBuf,
+}
+
+impl ManagedFlakeFile {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn load(&self) -> Result<FlakeManifest> {
+        if !self.path.exists() {
+            return Ok(FlakeManifest::default());
+        }
+        let raw = fs::read_to_string(&self.path)
+            .with_context(|| format!("reading {}", self.path.display()))?;
+        let mut modules = BTreeMap::new();
+        let mut in_block = false;
+        for line in raw.lines() {
+            let line = line.trim();
+            if line == "# nixbox:flakes:start" {
+                in_block = true;
+                continue;
+            }
+            if line == "# nixbox:flakes:end" {
+                break;
+            }
+            if !in_block {
+                continue;
+            }
+            let Some(path) = line.strip_prefix("inputs.\"") else {
+                continue;
+            };
+            let Some((input, module)) = path.split_once("\".") else {
+                continue;
+            };
+            modules.insert(input.to_string(), module.to_string());
+        }
+        Ok(FlakeManifest { modules })
+    }
+
+    pub fn write(&self, manifest: &FlakeManifest) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        }
+        let mut imports = String::new();
+        imports.push_str("    # nixbox:flakes:start\n");
+        for (input, module) in &manifest.modules {
+            imports.push_str(&format!("    inputs.\"{input}\".{module}\n"));
+        }
+        imports.push_str("    # nixbox:flakes:end\n");
+        let content = format!(
+            "# Managed by nixbox. Do not edit by hand.\n{{ inputs, ... }}:\n{{\n  imports = [\n{imports}  ];\n}}\n"
+        );
         fs::write(&self.path, content).with_context(|| format!("writing {}", self.path.display()))
     }
 }
@@ -467,5 +539,19 @@ mod tests {
         let pos = find_imports_keyword(raw).unwrap();
         // Should find the second occurrence (the real key), not the one in the string.
         assert!(raw[pos..].starts_with("imports = ["));
+    }
+
+    #[test]
+    fn flake_manifest_round_trips_module_imports() {
+        let path = std::env::temp_dir().join(format!("nixbox-flakes-{}.nix", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let managed = ManagedFlakeFile::new(&path);
+        let mut manifest = FlakeManifest::default();
+        manifest.add("owner/module".into(), "homeManagerModules.default".into());
+
+        managed.write(&manifest).unwrap();
+
+        assert_eq!(managed.load().unwrap().modules, manifest.modules);
+        let _ = fs::remove_file(path);
     }
 }

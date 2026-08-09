@@ -7,8 +7,8 @@ use nixbox_nix::{
         BuildEvent, flake_has_home_configuration, home_manager_switch_cmd,
         nixos_rebuild_switch_cmd, rebuild,
     },
-    flakes::{fetch_flake_details, search_flakes},
-    manifest::{ImportStatus, ManagedFile, ensure_imported},
+    flakes::{ensure_flake_input, fetch_flake_details, search_flakes},
+    manifest::{ImportStatus, ManagedFile, ManagedFlakeFile, ensure_imported},
     scan::{ScanTarget, remove_from_source},
 };
 use tokio::sync::{mpsc, oneshot};
@@ -251,6 +251,37 @@ fn apply_op_to_manifest(app: &mut App, op: &QueuedOp) -> Result<()> {
         QueuedOp::Install { hit, .. } => {
             app.manifest_for_mut(scope).add(&hit.attr);
         }
+        QueuedOp::InstallFlake { repo, module, .. } => {
+            let (special_args, constructor) = match scope {
+                Target::HomeManager => ("extraSpecialArgs", "homeManagerConfiguration"),
+                Target::NixosSystem => ("specialArgs", "nixosSystem"),
+            };
+            let flake_file = app.config.flake_file();
+            ensure_flake_input(&flake_file, repo, special_args, constructor)?;
+            let managed = ManagedFlakeFile::new(app.config.flake_manifest_for(scope));
+            let mut manifest = managed.load()?;
+            manifest.add(repo.clone(), module.clone());
+            managed.write(&manifest)?;
+            app.log.push(format!(
+                "Added github:{} to {} and imported its {}.",
+                repo,
+                flake_file.display(),
+                scope.label(),
+            ));
+            let main_file = app.config.main_file_for(scope);
+            if let Some(note) = ensure_imported_note(&main_file, &ManagedFile::new(managed.path()))
+            {
+                app.log.push(note);
+            }
+            for path in [&flake_file, managed.path(), &main_file] {
+                if path.exists()
+                    && let Some(note) = git_track(path)
+                {
+                    app.log.push(note);
+                }
+            }
+            return Ok(());
+        }
         QueuedOp::Uninstall { name, .. } => {
             app.manifest_for_mut(scope).remove(name);
         }
@@ -324,6 +355,68 @@ pub(crate) async fn install_selected(app: &mut App, tx: &mpsc::Sender<AppEvent>)
     app.persist();
     if app.build_in_progress {
         app.status = format!("Queued install: {}.", attr);
+        app.tab = Tab::Queue;
+    } else {
+        app.tab = Tab::Building;
+        drain_queue(app, tx);
+    }
+    Ok(())
+}
+
+pub(crate) async fn install_selected_flake(
+    app: &mut App,
+    tx: &mpsc::Sender<AppEvent>,
+) -> Result<()> {
+    let Some(details) = app.flake_details.clone() else {
+        app.status = "Wait for flake details before installing.".into();
+        return Ok(());
+    };
+    let scope = app.config.target;
+    let module = match scope {
+        Target::HomeManager
+            if details
+                .outputs
+                .iter()
+                .any(|output| output == "Home Manager modules") =>
+        {
+            "homeManagerModules.default"
+        }
+        Target::NixosSystem
+            if details
+                .outputs
+                .iter()
+                .any(|output| output == "NixOS modules") =>
+        {
+            "nixosModules.default"
+        }
+        _ => {
+            app.status = format!(
+                "{} does not publish a default {} module.",
+                details.repo,
+                scope.label()
+            );
+            return Ok(());
+        }
+    };
+    if app.queue.iter().any(|op| {
+        matches!(
+            op,
+            QueuedOp::InstallFlake { repo, scope: queued_scope, .. }
+                if repo == &details.repo && *queued_scope == scope
+        )
+    }) {
+        app.status = format!("{} is already queued.", details.repo);
+        return Ok(());
+    }
+
+    app.queue.push_back(QueuedOp::InstallFlake {
+        repo: details.repo.clone(),
+        module: module.into(),
+        scope,
+    });
+    app.persist();
+    if app.build_in_progress {
+        app.status = format!("Queued flake install: {}.", details.repo);
         app.tab = Tab::Queue;
     } else {
         app.tab = Tab::Building;
