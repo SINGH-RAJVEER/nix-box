@@ -7,6 +7,7 @@ use nixbox_nix::{
         BuildEvent, flake_has_home_configuration, home_manager_switch_cmd,
         nixos_rebuild_switch_cmd, rebuild,
     },
+    flakes::{fetch_flake_details, search_flakes},
     manifest::{ImportStatus, ManagedFile, ensure_imported},
     scan::{ScanTarget, remove_from_source},
 };
@@ -499,6 +500,87 @@ pub(crate) fn schedule_search(app: &mut App, tx: mpsc::Sender<AppEvent>) {
                     .send(AppEvent::SearchFailed {
                         epoch,
                         error: e.to_string(),
+                    })
+                    .await;
+            }
+        }
+    }));
+}
+
+pub(crate) fn schedule_flake_search(app: &mut App, tx: mpsc::Sender<AppEvent>) {
+    if let Some(task) = app.flake_search_task.take() {
+        task.abort();
+    }
+    if let Some(task) = app.flake_detail_task.take() {
+        task.abort();
+    }
+
+    let query = app.flake_input.value().trim().to_string();
+    if query.is_empty() {
+        app.flake_search_epoch += 1;
+        app.flake_detail_epoch += 1;
+        app.flake_searching = false;
+        app.flake_detail_loading = false;
+        app.flake_results.clear();
+        app.flake_details = None;
+        app.flake_selected = 0;
+        app.flake_query.clear();
+        app.status = "Search GitHub for flakes by content or project name.".into();
+        return;
+    }
+
+    app.flake_searching = true;
+    app.flake_detail_loading = false;
+    app.flake_search_epoch += 1;
+    let epoch = app.flake_search_epoch;
+    app.flake_query = query.clone();
+    app.flake_search_task = Some(tokio::spawn(async move {
+        sleep(Duration::from_millis(250)).await;
+        match search_flakes(&query).await {
+            Ok(hits) => {
+                let _ = tx.send(AppEvent::FlakeSearchDone { epoch, hits }).await;
+            }
+            Err(error) => {
+                let _ = tx
+                    .send(AppEvent::FlakeSearchFailed {
+                        epoch,
+                        error: error.to_string(),
+                    })
+                    .await;
+            }
+        }
+    }));
+}
+
+pub(crate) fn schedule_flake_details(app: &mut App, tx: mpsc::Sender<AppEvent>) {
+    let Some(hit) = app.flake_results.get(app.flake_selected).cloned() else {
+        app.flake_details = None;
+        app.flake_detail_loading = false;
+        return;
+    };
+    if let Some(task) = app.flake_detail_task.take() {
+        task.abort();
+    }
+
+    app.flake_detail_epoch += 1;
+    let epoch = app.flake_detail_epoch;
+    app.flake_detail_loading = true;
+    app.flake_details = None;
+    app.flake_detail_task = Some(tokio::spawn(async move {
+        match fetch_flake_details(&hit).await {
+            Ok(details) => {
+                let _ = tx
+                    .send(AppEvent::FlakeDetailsDone {
+                        epoch,
+                        details: Box::new(details),
+                    })
+                    .await;
+            }
+            Err(error) => {
+                let _ = tx
+                    .send(AppEvent::FlakeDetailsFailed {
+                        epoch,
+                        error: error.to_string(),
                     })
                     .await;
             }

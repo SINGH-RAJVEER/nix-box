@@ -14,6 +14,7 @@ use nixbox_config::{Config, DEFAULT_CHANNEL, InputMode, Target};
 use nixbox_nix::{
     Manifest,
     build::BuildEvent,
+    flakes::{FlakeDetails, FlakeHit},
     manifest::ManagedFile,
     scan::{ExternalPackage, ScanTarget, scan},
     search::SearchHit,
@@ -83,6 +84,7 @@ impl QueuedOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tab {
     Search,
+    Flakes,
     Installed,
     Building,
     Queue,
@@ -92,6 +94,7 @@ impl Tab {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Tab::Search => "Search",
+            Tab::Flakes => "Flakes",
             Tab::Installed => "Installed",
             Tab::Building => "Building",
             Tab::Queue => "Queue",
@@ -101,8 +104,30 @@ impl Tab {
 
 #[derive(Debug, Clone)]
 pub(crate) enum AppEvent {
-    SearchDone { epoch: u64, hits: Vec<SearchHit> },
-    SearchFailed { epoch: u64, error: String },
+    SearchDone {
+        epoch: u64,
+        hits: Vec<SearchHit>,
+    },
+    SearchFailed {
+        epoch: u64,
+        error: String,
+    },
+    FlakeSearchDone {
+        epoch: u64,
+        hits: Vec<FlakeHit>,
+    },
+    FlakeSearchFailed {
+        epoch: u64,
+        error: String,
+    },
+    FlakeDetailsDone {
+        epoch: u64,
+        details: Box<FlakeDetails>,
+    },
+    FlakeDetailsFailed {
+        epoch: u64,
+        error: String,
+    },
     Build(BuildEvent),
 }
 
@@ -133,6 +158,17 @@ pub(crate) struct App {
     pub(crate) input: VimInput,
     pub(crate) results: Vec<SearchHit>,
     pub(crate) selected: usize,
+    pub(crate) flake_input: VimInput,
+    pub(crate) flake_results: Vec<FlakeHit>,
+    pub(crate) flake_selected: usize,
+    pub(crate) flake_details: Option<FlakeDetails>,
+    pub(crate) flake_search_epoch: u64,
+    pub(crate) flake_detail_epoch: u64,
+    pub(crate) flake_query: String,
+    pub(crate) flake_searching: bool,
+    pub(crate) flake_detail_loading: bool,
+    pub(crate) flake_search_task: Option<JoinHandle<()>>,
+    pub(crate) flake_detail_task: Option<JoinHandle<()>>,
     pub(crate) installed_input: VimInput,
     pub(crate) installed_selected: usize,
     pub(crate) status: String,
@@ -181,9 +217,11 @@ impl App {
         };
         let input_mode = config.input_mode;
         let mut input = VimInput::default();
+        let mut flake_input = VimInput::default();
         let mut installed_input = VimInput::default();
         if input_mode == InputMode::Normal {
             input.enter_insert_before();
+            flake_input.enter_insert_before();
             installed_input.enter_insert_before();
         }
         Self {
@@ -194,6 +232,17 @@ impl App {
             input,
             results: Vec::new(),
             selected: 0,
+            flake_input,
+            flake_results: Vec::new(),
+            flake_selected: 0,
+            flake_details: None,
+            flake_search_epoch: 0,
+            flake_detail_epoch: 0,
+            flake_query: String::new(),
+            flake_searching: false,
+            flake_detail_loading: false,
+            flake_search_task: None,
+            flake_detail_task: None,
             installed_input,
             installed_selected: 0,
             status,
@@ -219,7 +268,7 @@ impl App {
     }
 
     pub(crate) fn visible_tabs(&self) -> Vec<Tab> {
-        let mut tabs = vec![Tab::Search, Tab::Installed];
+        let mut tabs = vec![Tab::Search, Tab::Flakes, Tab::Installed];
         if self.build_in_progress || !self.log.is_empty() {
             tabs.push(Tab::Building);
         }
@@ -474,11 +523,14 @@ mod tests {
         assert!(app.results.is_empty());
         assert_eq!(app.manifest_for(Target::HomeManager).packages.len(), 0);
         assert_eq!(app.manifest_for(Target::NixosSystem).packages.len(), 0);
-        assert_eq!(app.visible_tabs(), vec![Tab::Search, Tab::Installed]);
+        assert_eq!(
+            app.visible_tabs(),
+            vec![Tab::Search, Tab::Flakes, Tab::Installed]
+        );
     }
 
     #[test]
-    fn normal_input_preference_starts_both_inputs_in_insert_mode() {
+    fn normal_input_preference_starts_all_inputs_in_insert_mode() {
         let app = App::new(
             Config {
                 input_mode: InputMode::Normal,
@@ -490,6 +542,7 @@ mod tests {
         );
 
         assert_eq!(app.input.mode(), crate::vim::VimMode::Insert);
+        assert_eq!(app.flake_input.mode(), crate::vim::VimMode::Insert);
         assert_eq!(app.installed_input.mode(), crate::vim::VimMode::Insert);
         assert_eq!(app.settings_page, SettingsPage::Main);
         assert_eq!(app.settings_cursor, 0);
@@ -501,7 +554,7 @@ mod tests {
         app.build_in_progress = true;
         assert_eq!(
             app.visible_tabs(),
-            vec![Tab::Search, Tab::Installed, Tab::Building]
+            vec![Tab::Search, Tab::Flakes, Tab::Installed, Tab::Building]
         );
 
         app.queue.push_back(QueuedOp::Uninstall {
@@ -510,7 +563,13 @@ mod tests {
         });
         assert_eq!(
             app.visible_tabs(),
-            vec![Tab::Search, Tab::Installed, Tab::Building, Tab::Queue]
+            vec![
+                Tab::Search,
+                Tab::Flakes,
+                Tab::Installed,
+                Tab::Building,
+                Tab::Queue
+            ]
         );
     }
 
@@ -605,6 +664,12 @@ async fn event_loop(
             if let Some(task) = app.search_task.take() {
                 task.abort();
             }
+            if let Some(task) = app.flake_search_task.take() {
+                task.abort();
+            }
+            if let Some(task) = app.flake_detail_task.take() {
+                task.abort();
+            }
             break;
         }
 
@@ -615,12 +680,18 @@ async fn event_loop(
             Some(app_ev) = rx.recv() => {
                 handle_app_event(&mut app, &tx, app_ev);
             }
-            _ = spinner_tick.tick(), if app.searching || app.build_in_progress => {
+            _ = spinner_tick.tick(), if app.searching || app.flake_searching || app.flake_detail_loading || app.build_in_progress => {
                 app.spinner_frame = app.spinner_frame.wrapping_add(1);
             }
         }
     }
     if let Some(handle) = app.search_task.take() {
+        handle.abort();
+    }
+    if let Some(handle) = app.flake_search_task.take() {
+        handle.abort();
+    }
+    if let Some(handle) = app.flake_detail_task.take() {
         handle.abort();
     }
     Ok(())

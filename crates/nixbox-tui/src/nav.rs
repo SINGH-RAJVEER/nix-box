@@ -11,6 +11,15 @@ pub(crate) fn move_selection(app: &mut App, delta: i32) {
     app.selected = next as usize;
 }
 
+pub(crate) fn move_flake_selection(app: &mut App, delta: i32) {
+    if app.flake_results.is_empty() {
+        return;
+    }
+    let len = app.flake_results.len() as i32;
+    let next = (app.flake_selected as i32 + delta).rem_euclid(len);
+    app.flake_selected = next as usize;
+}
+
 pub(crate) fn move_installed_selection(app: &mut App, delta: i32) {
     let len = app.installed_total();
     if len == 0 {
@@ -39,6 +48,7 @@ pub(crate) fn set_tab(app: &mut App, tab: Tab) {
     if app.config.input_mode == InputMode::Vim {
         match tab {
             Tab::Search => app.input.enter_normal(),
+            Tab::Flakes => app.flake_input.enter_normal(),
             Tab::Installed => app.installed_input.enter_normal(),
             _ => {}
         }

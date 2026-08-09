@@ -13,6 +13,7 @@ pub(super) fn draw_search_bar(f: &mut Frame, area: Rect, app: &App) {
     let t = app.theme();
     let dim = Style::default().add_modifier(Modifier::DIM);
     let (input, placeholder) = match app.tab {
+        Tab::Flakes => (&app.flake_input, "search GitHub flake contents"),
         Tab::Installed => (&app.installed_input, "search installed applications"),
         _ => (&app.input, "search nixpkgs"),
     };
@@ -186,6 +187,7 @@ fn context_keys(app: &App) -> &'static str {
             Tab::Search => {
                 "type  ←→ cursor  ↑↓ results  tab/shift-tab tabs  ↵ install  ctrl-s settings"
             }
+            Tab::Flakes => "type  ←→ cursor  ↑↓ results  tab/shift-tab tabs  ctrl-s settings",
             Tab::Installed => {
                 "type to filter  ←→ cursor  ↑↓ results  tab/shift-tab tabs  ctrl-s settings"
             }
@@ -201,6 +203,17 @@ fn context_keys(app: &App) -> &'static str {
                 }
                 VimMode::Normal => {
                     "h/l/←→ cursor  v visual  i/a insert  tab/shift-tab tabs  ctrl-s settings"
+                }
+                VimMode::Visual => {
+                    "h/l/w/b select  d/x delete  c change  esc normal  ctrl-s settings"
+                }
+            },
+            Tab::Flakes => match app.flake_input.mode() {
+                VimMode::Insert => {
+                    "type  ←→ cursor  ↑↓ results  tab/shift-tab tabs  esc normal  ctrl-s settings"
+                }
+                VimMode::Normal => {
+                    "h/l/←→ cursor  v visual  i/a insert  j/k results  tab/shift-tab tabs"
                 }
                 VimMode::Visual => {
                     "h/l/w/b select  d/x delete  c change  esc normal  ctrl-s settings"

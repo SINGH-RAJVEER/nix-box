@@ -7,11 +7,12 @@ use tokio::sync::mpsc;
 
 use crate::app::{App, AppEvent, CHANNELS, INPUT_MODES, Mode, SettingsPage, TARGETS, Tab};
 use crate::nav::{
-    cycle_tab, cycle_tab_back, move_installed_selection, move_selection, open_settings,
+    cycle_tab, cycle_tab_back, move_flake_selection, move_installed_selection, move_selection,
+    open_settings,
 };
 use crate::ops::{
-    cancel_build, drain_queue, install_selected, migrate_all, migrate_selected, schedule_search,
-    uninstall_selected,
+    cancel_build, drain_queue, install_selected, migrate_all, migrate_selected,
+    schedule_flake_details, schedule_flake_search, schedule_search, uninstall_selected,
 };
 use crate::theme;
 use crate::vim::VimMode;
@@ -45,6 +46,14 @@ pub(crate) async fn handle_terminal_event(
         return Ok(());
     }
 
+    if matches!(key.code, KeyCode::Esc)
+        && app.config.input_mode == InputMode::Vim
+        && matches!(app.tab, Tab::Flakes)
+        && !matches!(app.flake_input.mode(), VimMode::Normal)
+    {
+        app.flake_input.enter_normal();
+        return Ok(());
+    }
     if matches!(key.code, KeyCode::Esc)
         && app.config.input_mode == InputMode::Vim
         && matches!(app.tab, Tab::Installed)
@@ -83,6 +92,21 @@ pub(crate) async fn handle_terminal_event(
                 _ => {
                     if app.input.handle_insert_event(&CtEvent::Key(key)) {
                         schedule_search(app, tx.clone());
+                    }
+                }
+            },
+            Tab::Flakes => match key.code {
+                KeyCode::Down => {
+                    move_flake_selection(app, 1);
+                    schedule_flake_details(app, tx.clone());
+                }
+                KeyCode::Up => {
+                    move_flake_selection(app, -1);
+                    schedule_flake_details(app, tx.clone());
+                }
+                _ => {
+                    if app.flake_input.handle_insert_event(&CtEvent::Key(key)) {
+                        schedule_flake_search(app, tx.clone());
                     }
                 }
             },
@@ -159,6 +183,72 @@ pub(crate) async fn handle_terminal_event(
                 KeyCode::Char('c') => {
                     app.input.delete_selection(true);
                     schedule_search(app, tx.clone());
+                }
+                _ => {}
+            },
+        },
+        Tab::Flakes => match app.flake_input.mode() {
+            VimMode::Insert => match key.code {
+                KeyCode::Down => {
+                    move_flake_selection(app, 1);
+                    schedule_flake_details(app, tx.clone());
+                }
+                KeyCode::Up => {
+                    move_flake_selection(app, -1);
+                    schedule_flake_details(app, tx.clone());
+                }
+                _ => {
+                    if app.flake_input.handle_insert_event(&CtEvent::Key(key)) {
+                        schedule_flake_search(app, tx.clone());
+                    }
+                }
+            },
+            VimMode::Normal => match key.code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    move_flake_selection(app, 1);
+                    schedule_flake_details(app, tx.clone());
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    move_flake_selection(app, -1);
+                    schedule_flake_details(app, tx.clone());
+                }
+                KeyCode::Left | KeyCode::Char('h') => app.flake_input.move_left(),
+                KeyCode::Right | KeyCode::Char('l') => app.flake_input.move_right(),
+                KeyCode::Char('b') => app.flake_input.move_prev_word(),
+                KeyCode::Char('w') => app.flake_input.move_next_word(),
+                KeyCode::Char('0') => app.flake_input.move_start(),
+                KeyCode::Char('$') => app.flake_input.move_end(),
+                KeyCode::Char('v') => app.flake_input.enter_visual(),
+                KeyCode::Char('x') => {
+                    if app.flake_input.delete_char() {
+                        schedule_flake_search(app, tx.clone());
+                    }
+                }
+                KeyCode::Char('D') => {
+                    if app.flake_input.delete_to_end() {
+                        schedule_flake_search(app, tx.clone());
+                    }
+                }
+                KeyCode::Char('i') | KeyCode::Char('/') => app.flake_input.enter_insert_before(),
+                KeyCode::Char('a') => app.flake_input.enter_insert_after(),
+                KeyCode::Char('I') => app.flake_input.enter_insert_start(),
+                KeyCode::Char('A') => app.flake_input.enter_insert_end(),
+                _ => {}
+            },
+            VimMode::Visual => match key.code {
+                KeyCode::Left | KeyCode::Char('h') => app.flake_input.move_left(),
+                KeyCode::Right | KeyCode::Char('l') => app.flake_input.move_right(),
+                KeyCode::Char('b') => app.flake_input.move_prev_word(),
+                KeyCode::Char('w') => app.flake_input.move_next_word(),
+                KeyCode::Char('0') => app.flake_input.move_start(),
+                KeyCode::Char('$') => app.flake_input.move_end(),
+                KeyCode::Char('d') | KeyCode::Char('x') => {
+                    if app.flake_input.delete_selection(false) {
+                        schedule_flake_search(app, tx.clone());
+                    }
+                }
+                KeyCode::Char('c') if app.flake_input.delete_selection(true) => {
+                    schedule_flake_search(app, tx.clone());
                 }
                 _ => {}
             },
@@ -383,6 +473,41 @@ pub(crate) fn handle_app_event(app: &mut App, tx: &mpsc::Sender<AppEvent>, ev: A
                 app.status = format!("search failed: {}", error);
             }
         }
+        AppEvent::FlakeSearchDone { epoch, hits } => {
+            if epoch == app.flake_search_epoch {
+                app.flake_search_task = None;
+                app.flake_searching = false;
+                app.flake_selected = 0;
+                app.flake_results = hits;
+                app.flake_details = None;
+                let count = app.flake_results.len();
+                app.status = format!("{} GitHub flake matches for `{}`", count, app.flake_query);
+                schedule_flake_details(app, tx.clone());
+            }
+        }
+        AppEvent::FlakeSearchFailed { epoch, error } => {
+            if epoch == app.flake_search_epoch {
+                app.flake_search_task = None;
+                app.flake_searching = false;
+                app.flake_results.clear();
+                app.flake_details = None;
+                app.status = format!("flake search failed: {}", error);
+            }
+        }
+        AppEvent::FlakeDetailsDone { epoch, details } => {
+            if epoch == app.flake_detail_epoch {
+                app.flake_detail_task = None;
+                app.flake_detail_loading = false;
+                app.flake_details = Some(*details);
+            }
+        }
+        AppEvent::FlakeDetailsFailed { epoch, error } => {
+            if epoch == app.flake_detail_epoch {
+                app.flake_detail_task = None;
+                app.flake_detail_loading = false;
+                app.status = format!("flake details failed: {}", error);
+            }
+        }
         AppEvent::Build(BuildEvent::Line(line)) => {
             app.log.push(line);
             if app.log.len() > 1000 {
@@ -500,10 +625,24 @@ mod tests {
         assert_eq!(app.input.cursor(), 2);
 
         press(&mut app, KeyCode::Tab).await;
-        assert_eq!(app.tab, Tab::Installed);
+        assert_eq!(app.tab, Tab::Flakes);
 
         press(&mut app, KeyCode::BackTab).await;
         assert_eq!(app.tab, Tab::Search);
+    }
+
+    #[tokio::test]
+    async fn flakes_tab_uses_vim_cursor_navigation() {
+        let mut app = test_app();
+        app.tab = Tab::Flakes;
+        app.flake_input = VimInput::new("niri".into());
+
+        press(&mut app, KeyCode::Char('h')).await;
+        assert_eq!(app.flake_input.cursor(), 2);
+
+        press(&mut app, KeyCode::Char('v')).await;
+        press(&mut app, KeyCode::Char('l')).await;
+        assert_eq!(app.flake_input.selection_range(), Some((2, 3)));
     }
 
     #[tokio::test]
