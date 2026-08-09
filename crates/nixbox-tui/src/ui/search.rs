@@ -117,8 +117,6 @@ pub(super) fn draw_search_body(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let detail_block = titled_panel(t, Span::styled("Details", t.title_style()));
-    let sep_w = split[1].width.saturating_sub(2) as usize;
-    let sep: String = "─".repeat(sep_w);
     let dim = Style::default().add_modifier(Modifier::DIM);
 
     if let Some(hit) = app.results.get(app.selected) {
@@ -132,22 +130,27 @@ pub(super) fn draw_search_body(f: &mut Frame, area: Rect, app: &App) {
 
         let mut lines: Vec<Line> = vec![
             Line::from(Span::styled(hit.pname.clone(), t.name_style())),
-            Line::from(Span::styled(hit.version.clone(), t.version_style())),
+            Line::from(Span::styled(
+                format!("version {}", hit.version),
+                t.version_style(),
+            )),
             Line::raw(""),
-            Line::from(Span::styled(sep.clone(), dim)),
+            Line::from(vec![
+                Span::styled("ABOUT", t.title_style()),
+                Span::styled("  ", dim),
+                Span::raw(desc),
+            ]),
             Line::raw(""),
-            Line::from(Span::styled("Attribute", dim)),
-            Line::from(Span::raw(hit.attr.clone())),
-            Line::raw(""),
-            Line::from(Span::styled("Description", dim)),
-            Line::from(Span::raw(desc)),
+            Line::from(Span::styled("PACKAGE", t.title_style())),
+            Line::from(vec![
+                Span::styled("attribute  ", dim),
+                Span::raw(hit.attr.clone()),
+            ]),
         ];
 
         if status.any_installed() {
             lines.push(Line::raw(""));
-            lines.push(Line::from(Span::styled(sep.clone(), dim)));
-            lines.push(Line::raw(""));
-            lines.push(Line::from(Span::styled("Installed", dim)));
+            lines.push(Line::from(Span::styled("INSTALLED", t.title_style())));
             for (installed, managed, scope_label) in [
                 (status.managed_hm, true, "home-manager"),
                 (status.managed_nixos, true, "nixos"),
@@ -171,12 +174,10 @@ pub(super) fn draw_search_body(f: &mut Frame, area: Rect, app: &App) {
         }
 
         lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled(sep.clone(), dim)));
-        lines.push(Line::raw(""));
         let hint = if status.installed_in(app.config.target) {
-            format!("↵  installed → {}", app.target_label())
+            format!("↵  installed for {}", app.target_label())
         } else {
-            format!("↵  install → {}", app.target_label())
+            format!("↵  install for {}", app.target_label())
         };
         lines.push(Line::from(Span::styled(hint, dim)));
 
@@ -189,8 +190,6 @@ pub(super) fn draw_search_body(f: &mut Frame, area: Rect, app: &App) {
     } else {
         let lines: Vec<Line> = vec![
             Line::from(Span::styled("nixpkgs search", t.title_style())),
-            Line::raw(""),
-            Line::from(Span::styled(sep, dim)),
             Line::raw(""),
             Line::from(Span::styled("/  type to search", dim)),
             Line::from(Span::styled("↑↓ j/k  navigate", dim)),

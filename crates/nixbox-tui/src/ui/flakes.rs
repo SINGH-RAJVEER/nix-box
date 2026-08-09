@@ -65,7 +65,6 @@ fn draw_details(f: &mut Frame, area: Rect, app: &App) {
     let t = app.theme();
     let block = titled_panel(t, Span::styled("Flake properties", t.title_style()));
     let dim = Style::default().add_modifier(Modifier::DIM);
-    let sep = "─".repeat(area.width.saturating_sub(2) as usize);
     if app.flake_detail_loading {
         let spinner = SPINNER[app.spinner_frame % SPINNER.len()];
         f.render_widget(
@@ -82,8 +81,6 @@ fn draw_details(f: &mut Frame, area: Rect, app: &App) {
         f.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled("GitHub flake browser", t.title_style())),
-                Line::raw(""),
-                Line::from(Span::styled(sep, dim)),
                 Line::raw(""),
                 Line::from(Span::styled("Searches only root flake.nix files.", dim)),
                 Line::from(Span::styled("Results are not cloned or persisted.", dim)),
@@ -114,31 +111,35 @@ fn draw_details(f: &mut Frame, area: Rect, app: &App) {
     let lines = vec![
         Line::from(Span::styled(details.repo.clone(), t.name_style())),
         Line::from(Span::styled(
-            format!("★ {}  ·  {}", details.stars, status),
+            format!(
+                "★ {}  ·  {}  ·  {}",
+                details.stars, status, details.default_branch
+            ),
             t.version_style(),
         )),
         Line::raw(""),
-        Line::from(Span::styled(sep, dim)),
+        Line::from(vec![
+            Span::styled("ABOUT", t.title_style()),
+            Span::styled("  ", dim),
+            Span::styled(description.to_string(), Style::default()),
+        ]),
         Line::raw(""),
-        Line::from(Span::styled("Description", dim)),
-        Line::from(description.to_string()),
+        Line::from(Span::styled("CAPABILITIES", t.title_style())),
+        Line::from(vec![
+            Span::styled("outputs  ", dim),
+            Span::styled(outputs, t.name_style()),
+        ]),
+        Line::from(vec![Span::styled("inputs   ", dim), Span::raw(inputs)]),
+        Line::from(vec![Span::styled("topics   ", dim), Span::raw(topics)]),
         Line::raw(""),
-        Line::from(Span::styled("Flake", dim)),
-        Line::from(details.path.clone()),
-        Line::from(Span::styled("Inputs", dim)),
-        Line::from(inputs),
-        Line::from(Span::styled("Outputs", dim)),
-        Line::from(outputs),
-        Line::from(Span::styled("Topics", dim)),
-        Line::from(topics),
-        Line::raw(""),
-        Line::from(Span::styled("Repository", dim)),
+        Line::from(Span::styled("SOURCE", t.title_style())),
+        Line::from(vec![
+            Span::styled("flake    ", dim),
+            Span::raw(details.path.clone()),
+        ]),
         Line::from(details.repo_url.clone()),
-        Line::from(Span::styled(
-            format!("branch {}  ·  pushed {}", details.default_branch, pushed),
-            dim,
-        )),
-        Line::from(Span::styled(format!("homepage {}", homepage), dim)),
+        Line::from(Span::styled(format!("updated  {pushed}"), dim)),
+        Line::from(Span::styled(format!("homepage  {homepage}"), dim)),
     ];
     f.render_widget(
         Paragraph::new(lines)

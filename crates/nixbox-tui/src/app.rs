@@ -109,7 +109,7 @@ pub(crate) enum Tab {
 impl Tab {
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Tab::Search => "Search",
+            Tab::Search => "nixpkgs",
             Tab::Flakes => "Flakes",
             Tab::Installed => "Installed",
             Tab::Building => "Building",
