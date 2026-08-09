@@ -1,20 +1,21 @@
 use anyhow::Result;
 use crossterm::event::{Event as CtEvent, KeyCode, KeyEventKind, KeyModifiers};
+use nixbox_config::InputMode;
 use nixbox_nix::build::BuildEvent;
 use nixbox_nix::search::MAX_SEARCH_RESULTS;
 use tokio::sync::mpsc;
-use tui_input::backend::crossterm::EventHandler;
 
-use crate::app::{App, AppEvent, CHANNELS, Mode, SearchInputMode, Tab};
+use crate::app::{App, AppEvent, CHANNELS, INPUT_MODES, Mode, SettingsPage, TARGETS, Tab};
 use crate::nav::{
-    cycle_tab, cycle_tab_back, cycle_theme, move_installed_selection, move_selection,
-    open_channel_edit, toggle_target,
+    cycle_tab, cycle_tab_back, move_flake_selection, move_installed_selection, move_selection,
+    open_settings,
 };
 use crate::ops::{
-    cancel_build, drain_queue, install_selected, migrate_all, migrate_selected, schedule_search,
-    uninstall_selected,
+    cancel_build, drain_queue, install_selected, migrate_all, migrate_selected,
+    schedule_flake_details, schedule_flake_search, schedule_search, uninstall_selected,
 };
 use crate::theme;
+use crate::vim::VimMode;
 
 pub(crate) async fn handle_terminal_event(
     app: &mut App,
@@ -31,29 +32,34 @@ pub(crate) async fn handle_terminal_event(
         return Ok(());
     }
 
-    if let Mode::ChannelEdit = app.mode {
-        handle_channel_edit(app, key.code);
-        return Ok(());
-    }
-
-    if let Mode::ThemeSelect = app.mode {
-        handle_theme_select(app, key.code, key.modifiers);
+    if let Mode::SettingsSelect = app.mode {
+        handle_settings_select(app, key.code, key.modifiers);
         return Ok(());
     }
 
     if matches!(key.code, KeyCode::Esc)
+        && app.config.input_mode == InputMode::Vim
         && matches!(app.tab, Tab::Search)
-        && matches!(app.search_input_mode, SearchInputMode::Insert)
+        && !matches!(app.input.mode(), VimMode::Normal)
     {
-        app.search_input_mode = SearchInputMode::Normal;
+        app.input.enter_normal();
         return Ok(());
     }
 
     if matches!(key.code, KeyCode::Esc)
-        && matches!(app.tab, Tab::Installed)
-        && matches!(app.installed_input_mode, SearchInputMode::Insert)
+        && app.config.input_mode == InputMode::Vim
+        && matches!(app.tab, Tab::Flakes)
+        && !matches!(app.flake_input.mode(), VimMode::Normal)
     {
-        app.installed_input_mode = SearchInputMode::Normal;
+        app.flake_input.enter_normal();
+        return Ok(());
+    }
+    if matches!(key.code, KeyCode::Esc)
+        && app.config.input_mode == InputMode::Vim
+        && matches!(app.tab, Tab::Installed)
+        && !matches!(app.installed_input.mode(), VimMode::Normal)
+    {
+        app.installed_input.enter_normal();
         return Ok(());
     }
 
@@ -66,16 +72,8 @@ pub(crate) async fn handle_terminal_event(
             cycle_tab_back(app);
             return Ok(());
         }
-        KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            toggle_target(app);
-            return Ok(());
-        }
-        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            cycle_theme(app);
-            return Ok(());
-        }
-        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            open_channel_edit(app);
+        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            open_settings(app);
             return Ok(());
         }
         KeyCode::Esc => {
@@ -85,69 +83,242 @@ pub(crate) async fn handle_terminal_event(
         _ => {}
     }
 
-    match app.tab {
-        Tab::Search => match app.search_input_mode {
-            SearchInputMode::Insert => match key.code {
+    if app.config.input_mode == InputMode::Normal {
+        match app.tab {
+            Tab::Search => match key.code {
                 KeyCode::Down => move_selection(app, 1),
                 KeyCode::Up => move_selection(app, -1),
                 KeyCode::Enter => install_selected(app, tx).await?,
                 _ => {
-                    let before = app.input.value().to_string();
-                    app.input.handle_event(&CtEvent::Key(key));
-                    if app.input.value() != before {
+                    if app.input.handle_insert_event(&CtEvent::Key(key)) {
                         schedule_search(app, tx.clone());
                     }
                 }
             },
-            SearchInputMode::Normal => match key.code {
-                KeyCode::Down | KeyCode::Char('j') => move_selection(app, 1),
-                KeyCode::Up | KeyCode::Char('k') => move_selection(app, -1),
-                KeyCode::Char('l') => cycle_tab(app),
-                KeyCode::Char('h') => cycle_tab_back(app),
-                KeyCode::Enter => install_selected(app, tx).await?,
-                KeyCode::Char('i') | KeyCode::Char('a') => {
-                    app.search_input_mode = SearchInputMode::Insert;
+            Tab::Flakes => match key.code {
+                KeyCode::Down => {
+                    move_flake_selection(app, 1);
+                    schedule_flake_details(app, tx.clone());
                 }
-                _ => {}
+                KeyCode::Up => {
+                    move_flake_selection(app, -1);
+                    schedule_flake_details(app, tx.clone());
+                }
+                _ => {
+                    if app.flake_input.handle_insert_event(&CtEvent::Key(key)) {
+                        schedule_flake_search(app, tx.clone());
+                    }
+                }
             },
-        },
-        Tab::Installed => match app.installed_input_mode {
-            SearchInputMode::Insert => match key.code {
+            Tab::Installed => match key.code {
                 KeyCode::Down => move_installed_selection(app, 1),
                 KeyCode::Up => move_installed_selection(app, -1),
                 _ => {
-                    let before = app.installed_input.value().to_string();
-                    app.installed_input.handle_event(&CtEvent::Key(key));
-                    if app.installed_input.value() != before {
+                    if app.installed_input.handle_insert_event(&CtEvent::Key(key)) {
                         clamp_installed_selection(app);
                     }
                 }
             },
-            SearchInputMode::Normal => match key.code {
-                KeyCode::Down | KeyCode::Char('j') => move_installed_selection(app, 1),
-                KeyCode::Up | KeyCode::Char('k') => move_installed_selection(app, -1),
-                KeyCode::Char('l') => cycle_tab(app),
-                KeyCode::Char('h') => cycle_tab_back(app),
-                KeyCode::Delete | KeyCode::Char('d') => uninstall_selected(app, tx).await?,
-                KeyCode::Char('m') => migrate_selected(app, tx).await?,
-                KeyCode::Char('M') => migrate_all(app, tx).await?,
-                KeyCode::Char('i') | KeyCode::Char('a') | KeyCode::Char('/') => {
-                    app.installed_input_mode = SearchInputMode::Insert;
+            Tab::Building => {
+                if matches!(key.code, KeyCode::Char('c')) {
+                    cancel_build(app);
+                }
+            }
+            Tab::Queue => {}
+        }
+        return Ok(());
+    }
+
+    match app.tab {
+        Tab::Search => match app.input.mode() {
+            VimMode::Insert => match key.code {
+                KeyCode::Down => move_selection(app, 1),
+                KeyCode::Up => move_selection(app, -1),
+                KeyCode::Enter => install_selected(app, tx).await?,
+                _ => {
+                    if app.input.handle_insert_event(&CtEvent::Key(key)) {
+                        schedule_search(app, tx.clone());
+                    }
+                }
+            },
+            VimMode::Normal => match key.code {
+                KeyCode::Down | KeyCode::Char('j') => move_selection(app, 1),
+                KeyCode::Up | KeyCode::Char('k') => move_selection(app, -1),
+                KeyCode::Left | KeyCode::Char('h') => app.input.move_left(),
+                KeyCode::Right | KeyCode::Char('l') => app.input.move_right(),
+                KeyCode::Char('b') => app.input.move_prev_word(),
+                KeyCode::Char('w') => app.input.move_next_word(),
+                KeyCode::Char('0') => app.input.move_start(),
+                KeyCode::Char('$') => app.input.move_end(),
+                KeyCode::Char('v') => app.input.enter_visual(),
+                KeyCode::Char('x') => {
+                    if app.input.delete_char() {
+                        schedule_search(app, tx.clone());
+                    }
+                }
+                KeyCode::Char('D') => {
+                    if app.input.delete_to_end() {
+                        schedule_search(app, tx.clone());
+                    }
+                }
+                KeyCode::Enter => install_selected(app, tx).await?,
+                KeyCode::Char('i') | KeyCode::Char('/') => app.input.enter_insert_before(),
+                KeyCode::Char('a') => app.input.enter_insert_after(),
+                KeyCode::Char('I') => app.input.enter_insert_start(),
+                KeyCode::Char('A') => app.input.enter_insert_end(),
+                _ => {}
+            },
+            VimMode::Visual => match key.code {
+                KeyCode::Left | KeyCode::Char('h') => app.input.move_left(),
+                KeyCode::Right | KeyCode::Char('l') => app.input.move_right(),
+                KeyCode::Char('b') => app.input.move_prev_word(),
+                KeyCode::Char('w') => app.input.move_next_word(),
+                KeyCode::Char('0') => app.input.move_start(),
+                KeyCode::Char('$') => app.input.move_end(),
+                KeyCode::Char('d') | KeyCode::Char('x') => {
+                    if app.input.delete_selection(false) {
+                        schedule_search(app, tx.clone());
+                    }
+                }
+                KeyCode::Char('c') => {
+                    app.input.delete_selection(true);
+                    schedule_search(app, tx.clone());
                 }
                 _ => {}
             },
         },
-        Tab::Building => match key.code {
-            KeyCode::Char('c') => cancel_build(app),
-            KeyCode::Char('l') => cycle_tab(app),
-            KeyCode::Char('h') => cycle_tab_back(app),
-            _ => {}
+        Tab::Flakes => match app.flake_input.mode() {
+            VimMode::Insert => match key.code {
+                KeyCode::Down => {
+                    move_flake_selection(app, 1);
+                    schedule_flake_details(app, tx.clone());
+                }
+                KeyCode::Up => {
+                    move_flake_selection(app, -1);
+                    schedule_flake_details(app, tx.clone());
+                }
+                _ => {
+                    if app.flake_input.handle_insert_event(&CtEvent::Key(key)) {
+                        schedule_flake_search(app, tx.clone());
+                    }
+                }
+            },
+            VimMode::Normal => match key.code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    move_flake_selection(app, 1);
+                    schedule_flake_details(app, tx.clone());
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    move_flake_selection(app, -1);
+                    schedule_flake_details(app, tx.clone());
+                }
+                KeyCode::Left | KeyCode::Char('h') => app.flake_input.move_left(),
+                KeyCode::Right | KeyCode::Char('l') => app.flake_input.move_right(),
+                KeyCode::Char('b') => app.flake_input.move_prev_word(),
+                KeyCode::Char('w') => app.flake_input.move_next_word(),
+                KeyCode::Char('0') => app.flake_input.move_start(),
+                KeyCode::Char('$') => app.flake_input.move_end(),
+                KeyCode::Char('v') => app.flake_input.enter_visual(),
+                KeyCode::Char('x') => {
+                    if app.flake_input.delete_char() {
+                        schedule_flake_search(app, tx.clone());
+                    }
+                }
+                KeyCode::Char('D') => {
+                    if app.flake_input.delete_to_end() {
+                        schedule_flake_search(app, tx.clone());
+                    }
+                }
+                KeyCode::Char('i') | KeyCode::Char('/') => app.flake_input.enter_insert_before(),
+                KeyCode::Char('a') => app.flake_input.enter_insert_after(),
+                KeyCode::Char('I') => app.flake_input.enter_insert_start(),
+                KeyCode::Char('A') => app.flake_input.enter_insert_end(),
+                _ => {}
+            },
+            VimMode::Visual => match key.code {
+                KeyCode::Left | KeyCode::Char('h') => app.flake_input.move_left(),
+                KeyCode::Right | KeyCode::Char('l') => app.flake_input.move_right(),
+                KeyCode::Char('b') => app.flake_input.move_prev_word(),
+                KeyCode::Char('w') => app.flake_input.move_next_word(),
+                KeyCode::Char('0') => app.flake_input.move_start(),
+                KeyCode::Char('$') => app.flake_input.move_end(),
+                KeyCode::Char('d') | KeyCode::Char('x') => {
+                    if app.flake_input.delete_selection(false) {
+                        schedule_flake_search(app, tx.clone());
+                    }
+                }
+                KeyCode::Char('c') if app.flake_input.delete_selection(true) => {
+                    schedule_flake_search(app, tx.clone());
+                }
+                _ => {}
+            },
         },
-        Tab::Queue => match key.code {
-            KeyCode::Char('l') => cycle_tab(app),
-            KeyCode::Char('h') => cycle_tab_back(app),
-            _ => {}
+        Tab::Installed => match app.installed_input.mode() {
+            VimMode::Insert => match key.code {
+                KeyCode::Down => move_installed_selection(app, 1),
+                KeyCode::Up => move_installed_selection(app, -1),
+                _ => {
+                    if app.installed_input.handle_insert_event(&CtEvent::Key(key)) {
+                        clamp_installed_selection(app);
+                    }
+                }
+            },
+            VimMode::Normal => match key.code {
+                KeyCode::Down | KeyCode::Char('j') => move_installed_selection(app, 1),
+                KeyCode::Up | KeyCode::Char('k') => move_installed_selection(app, -1),
+                KeyCode::Char('h') => app.installed_input.move_left(),
+                KeyCode::Char('l') => app.installed_input.move_right(),
+                KeyCode::Char('b') => app.installed_input.move_prev_word(),
+                KeyCode::Char('w') => app.installed_input.move_next_word(),
+                KeyCode::Char('0') => app.installed_input.move_start(),
+                KeyCode::Char('$') => app.installed_input.move_end(),
+                KeyCode::Char('v') => app.installed_input.enter_visual(),
+                KeyCode::Char('x') => {
+                    if app.installed_input.delete_char() {
+                        clamp_installed_selection(app);
+                    }
+                }
+                KeyCode::Char('D') => {
+                    if app.installed_input.delete_to_end() {
+                        clamp_installed_selection(app);
+                    }
+                }
+                KeyCode::Delete | KeyCode::Char('d') => uninstall_selected(app, tx).await?,
+                KeyCode::Char('m') => migrate_selected(app, tx).await?,
+                KeyCode::Char('M') => migrate_all(app, tx).await?,
+                KeyCode::Char('i') | KeyCode::Char('/') => {
+                    app.installed_input.enter_insert_before();
+                }
+                KeyCode::Char('a') => app.installed_input.enter_insert_after(),
+                KeyCode::Char('I') => app.installed_input.enter_insert_start(),
+                KeyCode::Char('A') => app.installed_input.enter_insert_end(),
+                _ => {}
+            },
+            VimMode::Visual => match key.code {
+                KeyCode::Char('h') => app.installed_input.move_left(),
+                KeyCode::Char('l') => app.installed_input.move_right(),
+                KeyCode::Char('b') => app.installed_input.move_prev_word(),
+                KeyCode::Char('w') => app.installed_input.move_next_word(),
+                KeyCode::Char('0') => app.installed_input.move_start(),
+                KeyCode::Char('$') => app.installed_input.move_end(),
+                KeyCode::Char('d') | KeyCode::Char('x') => {
+                    if app.installed_input.delete_selection(false) {
+                        clamp_installed_selection(app);
+                    }
+                }
+                KeyCode::Char('c') => {
+                    app.installed_input.delete_selection(true);
+                    clamp_installed_selection(app);
+                }
+                _ => {}
+            },
         },
+        Tab::Building => {
+            if let KeyCode::Char('c') = key.code {
+                cancel_build(app);
+            }
+        }
+        Tab::Queue => {}
     }
     Ok(())
 }
@@ -161,55 +332,115 @@ fn clamp_installed_selection(app: &mut App) {
     }
 }
 
-fn handle_channel_edit(app: &mut App, code: KeyCode) {
+fn handle_settings_select(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+    if matches!(code, KeyCode::Char('s')) && modifiers.contains(KeyModifiers::CONTROL) {
+        app.mode = Mode::Browsing;
+        app.status = "Settings closed.".into();
+        return;
+    }
+
     match code {
-        KeyCode::Down | KeyCode::Char('j') => {
-            app.channel_cursor = (app.channel_cursor + 1) % CHANNELS.len();
+        KeyCode::Up | KeyCode::Char('k')
+            if matches!(code, KeyCode::Up) || app.config.input_mode == InputMode::Vim =>
+        {
+            let n = settings_option_count(app.settings_page);
+            app.settings_cursor = app.settings_cursor.checked_sub(1).unwrap_or(n - 1);
         }
-        KeyCode::Up | KeyCode::Char('k') => {
-            let n = CHANNELS.len();
-            app.channel_cursor = app.channel_cursor.checked_sub(1).unwrap_or(n - 1);
+        KeyCode::Down | KeyCode::Char('j')
+            if matches!(code, KeyCode::Down) || app.config.input_mode == InputMode::Vim =>
+        {
+            app.settings_cursor =
+                (app.settings_cursor + 1) % settings_option_count(app.settings_page);
         }
-        KeyCode::Enter => {
-            let new = CHANNELS[app.channel_cursor].to_string();
-            app.config.channel = new.clone();
-            let _ = app.config.save();
-            app.status = format!("Channel set to {}.", new);
-            app.mode = Mode::Browsing;
-        }
-        KeyCode::Esc => {
-            app.mode = Mode::Browsing;
-            app.status = format!("Channel unchanged: {}.", app.config.channel);
-        }
+        KeyCode::Enter => select_setting(app),
+        KeyCode::Esc => close_settings_page(app),
         _ => {}
     }
 }
 
-fn handle_theme_select(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
-    match code {
-        KeyCode::Up | KeyCode::Char('k') => {
-            let n = theme::ALL.len();
-            app.theme_cursor = app.theme_cursor.checked_sub(1).unwrap_or(n - 1);
+fn settings_option_count(page: SettingsPage) -> usize {
+    match page {
+        SettingsPage::Main => 4,
+        SettingsPage::InputMode => INPUT_MODES.len(),
+        SettingsPage::Theme => theme::ALL.len(),
+        SettingsPage::Target => TARGETS.len(),
+        SettingsPage::Channel => CHANNELS.len(),
+    }
+}
+
+fn select_setting(app: &mut App) {
+    if app.settings_page == SettingsPage::Main {
+        app.settings_page = match app.settings_cursor {
+            0 => SettingsPage::InputMode,
+            1 => SettingsPage::Theme,
+            2 => SettingsPage::Target,
+            _ => SettingsPage::Channel,
+        };
+        app.settings_cursor = match app.settings_page {
+            SettingsPage::InputMode => INPUT_MODES
+                .iter()
+                .position(|mode| *mode == app.config.input_mode)
+                .unwrap_or(0),
+            SettingsPage::Theme => app.theme_index,
+            SettingsPage::Target => TARGETS
+                .iter()
+                .position(|target| *target == app.config.target)
+                .unwrap_or(0),
+            SettingsPage::Channel => CHANNELS
+                .iter()
+                .position(|channel| *channel == app.config.channel)
+                .unwrap_or(0),
+            SettingsPage::Main => 0,
+        };
+        app.status = "↑/↓ select  ·  Enter confirm  ·  Esc back".into();
+        return;
+    }
+
+    let page = app.settings_page;
+    app.status = match page {
+        SettingsPage::InputMode => {
+            let mode = INPUT_MODES[app.settings_cursor];
+            app.apply_input_mode(mode);
+            format!("Input set to {}.", mode.label())
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            app.theme_cursor = (app.theme_cursor + 1) % theme::ALL.len();
-        }
-        KeyCode::Enter => {
-            app.theme_index = app.theme_cursor;
+        SettingsPage::Theme => {
+            app.theme_index = app.settings_cursor;
             app.config.theme = theme::ALL[app.theme_index].name.to_string();
-            let _ = app.config.save();
-            app.status = format!("Theme set to {}.", theme::ALL[app.theme_index].name);
-            app.mode = Mode::Browsing;
+            format!("Theme set to {}.", theme::ALL[app.theme_index].name)
         }
-        KeyCode::Esc => {
-            app.mode = Mode::Browsing;
-            app.status = format!("Theme: {}.", theme::ALL[app.theme_index].name);
+        SettingsPage::Target => {
+            app.config.target = TARGETS[app.settings_cursor];
+            format!("Target set to {}.", app.config.target.label())
         }
-        KeyCode::Char('t') if modifiers.contains(KeyModifiers::CONTROL) => {
-            app.mode = Mode::Browsing;
-            app.status = format!("Theme: {}.", theme::ALL[app.theme_index].name);
+        SettingsPage::Channel => {
+            app.config.channel = CHANNELS[app.settings_cursor].to_string();
+            format!("Channel set to {}.", app.config.channel)
         }
-        _ => {}
+        SettingsPage::Main => unreachable!(),
+    };
+    let _ = app.config.save();
+    app.settings_page = SettingsPage::Main;
+    app.settings_cursor = settings_main_index(page);
+}
+
+fn close_settings_page(app: &mut App) {
+    if app.settings_page == SettingsPage::Main {
+        app.mode = Mode::Browsing;
+        app.status = "Settings closed.".into();
+    } else {
+        let page = app.settings_page;
+        app.settings_page = SettingsPage::Main;
+        app.settings_cursor = settings_main_index(page);
+        app.status = "↑/↓ select  ·  Enter open  ·  Esc close".into();
+    }
+}
+
+fn settings_main_index(page: SettingsPage) -> usize {
+    match page {
+        SettingsPage::Main | SettingsPage::InputMode => 0,
+        SettingsPage::Theme => 1,
+        SettingsPage::Target => 2,
+        SettingsPage::Channel => 3,
     }
 }
 
@@ -240,6 +471,41 @@ pub(crate) fn handle_app_event(app: &mut App, tx: &mpsc::Sender<AppEvent>, ev: A
                 app.search_task = None;
                 app.results.clear();
                 app.status = format!("search failed: {}", error);
+            }
+        }
+        AppEvent::FlakeSearchDone { epoch, hits } => {
+            if epoch == app.flake_search_epoch {
+                app.flake_search_task = None;
+                app.flake_searching = false;
+                app.flake_selected = 0;
+                app.flake_results = hits;
+                app.flake_details = None;
+                let count = app.flake_results.len();
+                app.status = format!("{} GitHub flake matches for `{}`", count, app.flake_query);
+                schedule_flake_details(app, tx.clone());
+            }
+        }
+        AppEvent::FlakeSearchFailed { epoch, error } => {
+            if epoch == app.flake_search_epoch {
+                app.flake_search_task = None;
+                app.flake_searching = false;
+                app.flake_results.clear();
+                app.flake_details = None;
+                app.status = format!("flake search failed: {}", error);
+            }
+        }
+        AppEvent::FlakeDetailsDone { epoch, details } => {
+            if epoch == app.flake_detail_epoch {
+                app.flake_detail_task = None;
+                app.flake_detail_loading = false;
+                app.flake_details = Some(*details);
+            }
+        }
+        AppEvent::FlakeDetailsFailed { epoch, error } => {
+            if epoch == app.flake_detail_epoch {
+                app.flake_detail_task = None;
+                app.flake_detail_loading = false;
+                app.status = format!("flake details failed: {}", error);
             }
         }
         AppEvent::Build(BuildEvent::Line(line)) => {
@@ -298,5 +564,182 @@ pub(crate) fn handle_app_event(app: &mut App, tx: &mpsc::Sender<AppEvent>, ev: A
                 app.tab = Tab::Search;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyEvent;
+    use nixbox_config::Config;
+    use nixbox_nix::Manifest;
+
+    use crate::vim::VimInput;
+
+    fn test_app() -> App {
+        App::new(
+            Config::default(),
+            Manifest::default(),
+            Manifest::default(),
+            Vec::new(),
+        )
+    }
+
+    async fn press(app: &mut App, code: KeyCode) {
+        press_with_modifiers(app, code, KeyModifiers::NONE).await;
+    }
+
+    async fn press_with_modifiers(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+        let (tx, _rx) = mpsc::channel(1);
+        let key = KeyEvent::new(code, modifiers);
+        handle_terminal_event(app, &tx, CtEvent::Key(key))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn h_and_l_move_the_search_cursor_without_switching_tabs() {
+        let mut app = test_app();
+        app.input = VimInput::new("abc".into());
+
+        press(&mut app, KeyCode::Char('h')).await;
+        assert_eq!(app.input.cursor(), 1);
+        assert_eq!(app.tab, Tab::Search);
+
+        press(&mut app, KeyCode::Char('l')).await;
+        assert_eq!(app.input.cursor(), 2);
+        assert_eq!(app.tab, Tab::Search);
+    }
+
+    #[tokio::test]
+    async fn only_tab_and_backtab_switch_tabs() {
+        let mut app = test_app();
+        app.input = VimInput::new("abc".into());
+
+        press(&mut app, KeyCode::Left).await;
+        assert_eq!(app.tab, Tab::Search);
+        assert_eq!(app.input.cursor(), 1);
+
+        press(&mut app, KeyCode::Right).await;
+        assert_eq!(app.tab, Tab::Search);
+        assert_eq!(app.input.cursor(), 2);
+
+        press(&mut app, KeyCode::Tab).await;
+        assert_eq!(app.tab, Tab::Flakes);
+
+        press(&mut app, KeyCode::BackTab).await;
+        assert_eq!(app.tab, Tab::Search);
+    }
+
+    #[tokio::test]
+    async fn flakes_tab_uses_vim_cursor_navigation() {
+        let mut app = test_app();
+        app.tab = Tab::Flakes;
+        app.flake_input = VimInput::new("niri".into());
+
+        press(&mut app, KeyCode::Char('h')).await;
+        assert_eq!(app.flake_input.cursor(), 2);
+
+        press(&mut app, KeyCode::Char('v')).await;
+        press(&mut app, KeyCode::Char('l')).await;
+        assert_eq!(app.flake_input.selection_range(), Some((2, 3)));
+    }
+
+    #[tokio::test]
+    async fn ctrl_s_opens_and_closes_settings() {
+        let mut app = test_app();
+
+        press_with_modifiers(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL).await;
+        assert_eq!(app.mode, Mode::SettingsSelect);
+        assert_eq!(app.settings_page, SettingsPage::Main);
+        assert_eq!(app.settings_cursor, 0);
+
+        press(&mut app, KeyCode::Enter).await;
+        assert_eq!(app.settings_page, SettingsPage::InputMode);
+        assert_eq!(app.settings_cursor, 0);
+
+        press(&mut app, KeyCode::Esc).await;
+        assert_eq!(app.settings_page, SettingsPage::Main);
+        assert_eq!(app.settings_cursor, 0);
+
+        press(&mut app, KeyCode::Down).await;
+        assert_eq!(app.settings_cursor, 1);
+
+        press(&mut app, KeyCode::Enter).await;
+        assert_eq!(app.settings_page, SettingsPage::Theme);
+
+        press_with_modifiers(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL).await;
+        assert_eq!(app.mode, Mode::Browsing);
+        assert_eq!(app.config.input_mode, InputMode::Vim);
+    }
+
+    #[tokio::test]
+    async fn normal_mode_settings_navigation_uses_only_arrow_keys() {
+        let mut app = test_app();
+        app.apply_input_mode(InputMode::Normal);
+
+        press_with_modifiers(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL).await;
+        press(&mut app, KeyCode::Char('j')).await;
+        assert_eq!(app.settings_cursor, 0);
+
+        press(&mut app, KeyCode::Down).await;
+        assert_eq!(app.settings_cursor, 1);
+
+        press(&mut app, KeyCode::Char('k')).await;
+        assert_eq!(app.settings_cursor, 1);
+
+        press(&mut app, KeyCode::Up).await;
+        assert_eq!(app.settings_cursor, 0);
+    }
+
+    #[tokio::test]
+    async fn former_settings_shortcuts_are_unbound() {
+        let mut app = test_app();
+
+        for code in ['t', 'g', 'n'] {
+            press_with_modifiers(&mut app, KeyCode::Char(code), KeyModifiers::CONTROL).await;
+        }
+
+        assert_eq!(app.mode, Mode::Browsing);
+        assert_eq!(app.config.target, Config::default().target);
+        assert_eq!(app.config.channel, Config::default().channel);
+        assert_eq!(app.config.theme, Config::default().theme);
+    }
+
+    #[test]
+    fn every_settings_row_opens_its_own_page() {
+        let mut app = test_app();
+        let pages = [
+            SettingsPage::InputMode,
+            SettingsPage::Theme,
+            SettingsPage::Target,
+            SettingsPage::Channel,
+        ];
+
+        for (index, page) in pages.into_iter().enumerate() {
+            app.settings_page = SettingsPage::Main;
+            app.settings_cursor = index;
+            select_setting(&mut app);
+            assert_eq!(app.settings_page, page);
+
+            close_settings_page(&mut app);
+            assert_eq!(app.settings_page, SettingsPage::Main);
+            assert_eq!(app.settings_cursor, index);
+        }
+    }
+
+    #[tokio::test]
+    async fn normal_input_mode_types_without_vim_transitions() {
+        let mut app = test_app();
+        app.apply_input_mode(InputMode::Normal);
+        app.tab = Tab::Installed;
+
+        press(&mut app, KeyCode::Char('h')).await;
+        assert_eq!(app.installed_input.value(), "h");
+        assert_eq!(app.installed_input.mode(), VimMode::Insert);
+
+        press(&mut app, KeyCode::Esc).await;
+        assert!(app.should_quit);
+        assert_eq!(app.installed_input.mode(), VimMode::Insert);
     }
 }

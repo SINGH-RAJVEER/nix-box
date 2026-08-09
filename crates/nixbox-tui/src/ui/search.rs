@@ -195,7 +195,7 @@ pub(super) fn draw_search_body(f: &mut Frame, area: Rect, app: &App) {
             Line::from(Span::styled("/  type to search", dim)),
             Line::from(Span::styled("↑↓ j/k  navigate", dim)),
             Line::from(Span::styled("↵   install", dim)),
-            Line::from(Span::styled("h/l  switch tabs", dim)),
+            Line::from(Span::styled("tab  switch tabs", dim)),
         ];
         f.render_widget(
             Paragraph::new(lines)

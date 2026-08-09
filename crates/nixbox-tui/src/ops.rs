@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
 use anyhow::Result;
 use nixbox_config::Target;
@@ -7,6 +7,7 @@ use nixbox_nix::{
         BuildEvent, flake_has_home_configuration, home_manager_switch_cmd,
         nixos_rebuild_switch_cmd, rebuild,
     },
+    flakes::{fetch_flake_details, search_flakes},
     manifest::{ImportStatus, ManagedFile, ensure_imported},
     scan::{ScanTarget, remove_from_source},
 };
@@ -199,14 +200,24 @@ pub(crate) fn drain_queue(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
     if app.build_in_progress {
         return;
     }
-    let Some(op) = app.queue.pop_front() else {
+    let Some(scope) = app.queue.front().map(QueuedOp::scope) else {
         app.persist();
         return;
     };
-    let label = op.label();
-    let scope = op.scope();
-    if let Err(e) = apply_op_to_manifest(app, &op) {
-        app.status = format!("{}: failed to write manifest: {}", label, e);
+
+    let batch = take_queued_scope(app, scope);
+    let mut applied = 0;
+    for op in batch {
+        let label = op.label();
+        match apply_op_to_manifest(app, &op) {
+            Ok(()) => applied += 1,
+            Err(e) => app
+                .log
+                .push(format!("{}: failed to write manifest: {}", label, e)),
+        }
+    }
+    if applied == 0 {
+        app.status = format!("No queued {} changes could be written.", scope.label());
         app.persist();
         drain_queue(app, tx);
         return;
@@ -214,7 +225,24 @@ pub(crate) fn drain_queue(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
     if !app.visible_tabs().contains(&app.tab) {
         app.tab = Tab::Search;
     }
+    let label = format!("apply {} queued {} change(s)", applied, scope.label(),);
     spawn_rebuild(app, tx, scope, label);
+}
+
+/// Removes every pending operation for `scope`, preserving the order of work
+/// for any other scope that requires a separate rebuild command.
+fn take_queued_scope(app: &mut App, scope: Target) -> Vec<QueuedOp> {
+    let mut batch = Vec::new();
+    let mut remaining = VecDeque::new();
+    while let Some(op) = app.queue.pop_front() {
+        if op.scope() == scope {
+            batch.push(op);
+        } else {
+            remaining.push_back(op);
+        }
+    }
+    app.queue = remaining;
+    batch
 }
 
 fn apply_op_to_manifest(app: &mut App, op: &QueuedOp) -> Result<()> {
@@ -479,15 +507,96 @@ pub(crate) fn schedule_search(app: &mut App, tx: mpsc::Sender<AppEvent>) {
     }));
 }
 
+pub(crate) fn schedule_flake_search(app: &mut App, tx: mpsc::Sender<AppEvent>) {
+    if let Some(task) = app.flake_search_task.take() {
+        task.abort();
+    }
+    if let Some(task) = app.flake_detail_task.take() {
+        task.abort();
+    }
+
+    let query = app.flake_input.value().trim().to_string();
+    if query.is_empty() {
+        app.flake_search_epoch += 1;
+        app.flake_detail_epoch += 1;
+        app.flake_searching = false;
+        app.flake_detail_loading = false;
+        app.flake_results.clear();
+        app.flake_details = None;
+        app.flake_selected = 0;
+        app.flake_query.clear();
+        app.status = "Search GitHub for flakes by content or project name.".into();
+        return;
+    }
+
+    app.flake_searching = true;
+    app.flake_detail_loading = false;
+    app.flake_search_epoch += 1;
+    let epoch = app.flake_search_epoch;
+    app.flake_query = query.clone();
+    app.flake_search_task = Some(tokio::spawn(async move {
+        sleep(Duration::from_millis(250)).await;
+        match search_flakes(&query).await {
+            Ok(hits) => {
+                let _ = tx.send(AppEvent::FlakeSearchDone { epoch, hits }).await;
+            }
+            Err(error) => {
+                let _ = tx
+                    .send(AppEvent::FlakeSearchFailed {
+                        epoch,
+                        error: error.to_string(),
+                    })
+                    .await;
+            }
+        }
+    }));
+}
+
+pub(crate) fn schedule_flake_details(app: &mut App, tx: mpsc::Sender<AppEvent>) {
+    let Some(hit) = app.flake_results.get(app.flake_selected).cloned() else {
+        app.flake_details = None;
+        app.flake_detail_loading = false;
+        return;
+    };
+    if let Some(task) = app.flake_detail_task.take() {
+        task.abort();
+    }
+
+    app.flake_detail_epoch += 1;
+    let epoch = app.flake_detail_epoch;
+    app.flake_detail_loading = true;
+    app.flake_details = None;
+    app.flake_detail_task = Some(tokio::spawn(async move {
+        match fetch_flake_details(&hit).await {
+            Ok(details) => {
+                let _ = tx
+                    .send(AppEvent::FlakeDetailsDone {
+                        epoch,
+                        details: Box::new(details),
+                    })
+                    .await;
+            }
+            Err(error) => {
+                let _ = tx
+                    .send(AppEvent::FlakeDetailsFailed {
+                        epoch,
+                        error: error.to_string(),
+                    })
+                    .await;
+            }
+        }
+    }));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::App;
+    use crate::vim::VimInput;
     use nixbox_config::Config;
     use nixbox_nix::{manifest::Manifest, search::SearchHit};
     use tokio::sync::{mpsc, oneshot};
     use tokio::time::timeout;
-    use tui_input::Input;
 
     fn hit(name: &str) -> SearchHit {
         SearchHit {
@@ -511,7 +620,7 @@ mod tests {
     async fn empty_query_clears_results_and_does_not_spawn_search() {
         let (tx, _rx) = mpsc::channel(1);
         let mut app = test_app();
-        app.input = Input::new(String::new());
+        app.input = VimInput::new(String::new());
         app.results = vec![hit("ripgrep")];
         app.selected = 4;
         app.searching = true;
@@ -543,7 +652,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel(1);
         let (dropped_tx, dropped_rx) = oneshot::channel();
         let mut app = test_app();
-        app.input = Input::new("ripgrep".into());
+        app.input = VimInput::new("ripgrep".into());
         app.search_task = Some(tokio::spawn(async move {
             let _guard = NotifyOnDrop(Some(dropped_tx));
             std::future::pending::<()>().await;
@@ -575,5 +684,32 @@ mod tests {
         assert!(app.build_cancel.is_none());
         assert!(app.build_in_progress);
         assert_eq!(app.status, "Cancelling build...");
+    }
+
+    #[test]
+    fn taking_a_scope_batches_all_of_its_pending_operations() {
+        let mut app = test_app();
+        app.queue.push_back(QueuedOp::Install {
+            hit: hit("ripgrep"),
+            scope: Target::HomeManager,
+        });
+        app.queue.push_back(QueuedOp::Install {
+            hit: hit("fd"),
+            scope: Target::NixosSystem,
+        });
+        app.queue.push_back(QueuedOp::Uninstall {
+            name: "neovim".into(),
+            scope: Target::HomeManager,
+        });
+
+        let batch = take_queued_scope(&mut app, Target::HomeManager);
+
+        assert_eq!(batch.len(), 2);
+        assert!(batch.iter().all(|op| op.scope() == Target::HomeManager));
+        assert_eq!(app.queue.len(), 1);
+        assert!(matches!(
+            app.queue.front(),
+            Some(QueuedOp::Install { hit, scope: Target::NixosSystem }) if hit.attr == "fd"
+        ));
     }
 }

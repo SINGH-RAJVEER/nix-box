@@ -9,6 +9,7 @@ use crate::theme;
 
 mod bars;
 mod build;
+mod flakes;
 mod installed;
 mod popups;
 mod queue;
@@ -33,7 +34,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App) {
         f.render_widget(Block::default().style(Style::default().bg(bg)), f.area());
     }
 
-    let show_search_bar = matches!(app.tab, Tab::Search | Tab::Installed);
+    let show_search_bar = matches!(app.tab, Tab::Search | Tab::Flakes | Tab::Installed);
 
     let mut constraints = vec![Constraint::Length(1)];
     if show_search_bar {
@@ -60,6 +61,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App) {
 
     match app.tab {
         Tab::Search => search::draw_search_body(f, body_area, app),
+        Tab::Flakes => flakes::draw_flakes_body(f, body_area, app),
         Tab::Installed => installed::draw_installed_body(f, body_area, app),
         Tab::Building => build::draw_build_body(f, body_area, app),
         Tab::Queue => queue::draw_queue_body(f, body_area, app),
@@ -67,10 +69,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App) {
 
     bars::draw_footer(f, footer_area, app);
 
-    if matches!(app.mode, Mode::ThemeSelect) {
-        popups::draw_theme_popup(f, app);
-    }
-    if matches!(app.mode, Mode::ChannelEdit) {
-        popups::draw_channel_popup(f, app);
+    if matches!(app.mode, Mode::SettingsSelect) {
+        popups::draw_settings_popup(f, app);
     }
 }

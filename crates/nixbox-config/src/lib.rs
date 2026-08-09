@@ -12,6 +12,23 @@ pub enum Target {
     NixosSystem,
 }
 
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum InputMode {
+    #[default]
+    Vim,
+    Normal,
+}
+
+impl InputMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            InputMode::Vim => "Vim mode",
+            InputMode::Normal => "Normal mode",
+        }
+    }
+}
+
 impl Target {
     pub fn label(self) -> &'static str {
         match self {
@@ -30,6 +47,7 @@ impl Target {
 }
 
 const MAX_RECENT_SEARCHES: usize = 20;
+pub const DEFAULT_CHANNEL: &str = "nixpkgs-26.05";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -37,6 +55,8 @@ pub struct Config {
     pub target: Target,
     #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default)]
+    pub input_mode: InputMode,
     #[serde(default)]
     pub recent_searches: Vec<String>,
     /// Override for the user's main home-manager config (defaults to
@@ -56,9 +76,10 @@ fn default_theme() -> String {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            channel: "nixpkgs".to_string(),
+            channel: DEFAULT_CHANNEL.to_string(),
             target: Target::NixosSystem,
             theme: default_theme(),
+            input_mode: InputMode::default(),
             recent_searches: Vec::new(),
             home_manager_main_file: None,
             nixos_main_file: None,
@@ -172,9 +193,10 @@ mod tests {
     #[test]
     fn default_config_is_nixos_on_nixpkgs_with_default_theme() {
         let cfg = Config::default();
-        assert_eq!(cfg.channel, "nixpkgs");
+        assert_eq!(cfg.channel, "nixpkgs-26.05");
         assert_eq!(cfg.target, Target::NixosSystem);
         assert_eq!(cfg.theme, "default");
+        assert_eq!(cfg.input_mode, InputMode::Vim);
         assert!(cfg.recent_searches.is_empty());
         assert!(cfg.home_manager_main_file.is_none());
         assert!(cfg.nixos_main_file.is_none());
@@ -224,9 +246,21 @@ mod tests {
         assert_eq!(cfg.channel, "nixpkgs-unstable");
         assert_eq!(cfg.target, Target::HomeManager);
         assert_eq!(cfg.theme, "default");
+        assert_eq!(cfg.input_mode, InputMode::Vim);
         assert!(cfg.recent_searches.is_empty());
         assert!(cfg.home_manager_main_file.is_none());
         assert!(cfg.nixos_main_file.is_none());
+    }
+
+    #[test]
+    fn input_modes_have_stable_names() {
+        assert_eq!(serde_json::to_string(&InputMode::Vim).unwrap(), r#""vim""#);
+        assert_eq!(
+            serde_json::to_string(&InputMode::Normal).unwrap(),
+            r#""normal""#
+        );
+        assert_eq!(InputMode::Vim.label(), "Vim mode");
+        assert_eq!(InputMode::Normal.label(), "Normal mode");
     }
 
     #[test]
