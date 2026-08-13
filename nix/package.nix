@@ -2,7 +2,7 @@
 
 rustPlatform.buildRustPackage rec {
   pname = "nixbox";
-  version = "0.1.0";
+  version = "0.2.0";
 
   src = fetchCrate {
     inherit pname version;
@@ -15,7 +15,7 @@ rustPlatform.buildRustPackage rec {
     description = "TUI package manager for NixOS that wires selections into your flake + home-manager config";
     homepage = "https://github.com/SINGH-RAJVEER/nixbox";
     license = licenses.asl20;
-    maintainers = with maintainers; [ ];
+    maintainers = with maintainers; [ Rajveer Singh ];
     mainProgram = "nixbox";
     platforms = platforms.linux;
   };
