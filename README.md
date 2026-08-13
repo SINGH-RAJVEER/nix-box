@@ -2,6 +2,8 @@
 
 A NixOS TUI package manager. Search a nixpkgs channel, pick a package, and NixBox writes it into your home-manager or NixOS config and runs the rebuild — without ever leaving the terminal.
 
+Current release: [0.2.0](https://crates.io/crates/nixbox/0.2.0)
+
 ## What it does
 
 - Live search against `nix search --json` over a configurable flake input (default `nixpkgs`).
@@ -26,8 +28,10 @@ Inside the managed file, NixBox owns everything between `# nixbox:packages:start
 ## Install
 
 ```sh
-cargo install nixbox
+cargo install nixbox --version 0.2.0
 ```
+
+NixBox requires a working Nix installation and a configured NixOS or home-manager flake. The `nix` and rebuild commands are executed locally, so make sure the selected flake can be evaluated before installing packages.
 
 Or build from source:
 
@@ -42,6 +46,8 @@ cargo build --release
 nixbox          # if cargo-installed
 devenv shell -- just run  # from a checkout
 ```
+
+NixBox stores its settings and managed package files separately from this repository. By default, settings are written to `~/.config/nixbox/settings.json`; paths and the active target can be changed from the settings screen with `Ctrl-S`.
 
 ## Development
 
