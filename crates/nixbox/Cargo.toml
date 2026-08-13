@@ -16,9 +16,9 @@ name = "nixbox"
 path = "src/main.rs"
 
 [dependencies]
-nixbox-tui = { path = "../nixbox-tui", version = "0.1.10" }
-nixbox-nix = { path = "../nixbox-nix", version = "0.1.10" }
-nixbox-config = { path = "../nixbox-config", version = "0.1.10" }
+nixbox-tui = { path = "../nixbox-tui", version = "0.1.0" }
+nixbox-nix = { path = "../nixbox-nix", version = "0.1.0" }
+nixbox-config = { path = "../nixbox-config", version = "0.1.0" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
