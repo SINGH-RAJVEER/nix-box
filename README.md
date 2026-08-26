@@ -29,6 +29,8 @@ Inside the managed file, NixBox owns everything between `# nixbox:packages:start
 cargo install nixbox
 ```
 
+NixBox requires a working Nix installation and a configured NixOS or home-manager flake. The `nix` and rebuild commands are executed locally, so make sure the selected flake can be evaluated before installing packages.
+
 Or build from source:
 
 ```sh
@@ -42,6 +44,8 @@ cargo build --release
 nixbox          # if cargo-installed
 devenv shell -- just run  # from a checkout
 ```
+
+NixBox stores its settings and managed package files separately from this repository. By default, settings are written to `~/.config/nixbox/settings.json`; paths and the active target can be changed from the settings screen with `Ctrl-S`.
 
 ## Development
 

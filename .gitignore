@@ -5,3 +5,4 @@ CLAUDE.md
 /.direnv
 /.devenv
 /.devenv.flake.nix
+/.env
